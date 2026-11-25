@@ -56,6 +56,31 @@ unless they're explicitly gated the same way. Load
 **`write-compliance-tests`** before adding tests — it has the coverage
 pattern, mocking conventions, and where each kind of test belongs.
 
+## Future deployment (planned, not done yet)
+
+Not deployed anywhere yet — still local-only — but the plan is to deploy
+to **Streamlit Community Cloud** (the free option) at some point. That
+platform injects secrets via `st.secrets` (TOML, set in its dashboard),
+**not** `os.environ` — and there's no `~/.aws/credentials` file on their
+servers either. Everything here currently reads secrets/credentials via
+plain `os.environ`/the standard AWS credential chain (`GROQ_API_KEY` in
+`groq_llm.py`; AWS creds via `bedrock_llm.py`/`bedrock_embeddings.py`'s
+boto3 clients), so a straight deploy would leave them all unset. Before
+that deploy, `app_ui.py` needs a small secrets bridge near the top —
+safe to add even before deployment, since `st.secrets` is just empty
+locally when there's no `secrets.toml`:
+
+```python
+for key in ("GROQ_API_KEY", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_REGION"):
+    if key in st.secrets:
+        os.environ.setdefault(key, st.secrets[key])
+```
+
+Then add `GROQ_API_KEY` and the AWS credentials (`AWS_ACCESS_KEY_ID`/
+`AWS_SECRET_ACCESS_KEY`, plus `AWS_REGION` if not `us-east-1`) as secrets
+in the Streamlit Cloud dashboard — never commit them. `demo.py` (CLI) and
+`eval/` aren't part of this deploy target and don't need this bridge.
+
 ## Before changing specific areas, load the matching skill
 
 This repo has project skills under `.claude/skills/` with the
