@@ -109,6 +109,11 @@ editing rather than guessing from this summary:
 
 ## Conventions
 
+- **Commits and PRs in this repo are the user's alone** — do not add a
+  `Co-Authored-By: Claude ...` trailer (or any other Claude/Anthropic
+  attribution) to commit messages or PR descriptions here. This
+  overrides any default agent/harness convention that would otherwise
+  add one.
 - Keep modules dependency-light and runnable standalone (`if __name__ ==
   "__main__":` smoke tests exist in `retriever.py`, `classifier.py`,
   `bedrock_llm.py`, `groq_llm.py`, `agents.py` — keep that pattern for
