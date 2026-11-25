@@ -8,7 +8,9 @@ test_live_bedrock.py.
 """
 import pytest
 
-from agents import ComplianceAgentGraph
+from agents import ComplianceAgentGraph, _default_llm
+from bedrock_llm import BedrockSummarizer
+from groq_llm import GroqSummarizer
 from retriever import Chunk, Retriever
 
 
@@ -130,7 +132,7 @@ def test_bedrock_failure_falls_back_to_template_not_crash(grounded_retriever):
     assert result.verification["grounded"] is True
     assert "Relevant regulatory text" in result.answer
     assert "Citations:" in result.answer
-    assert any("Bedrock unavailable" in line for line in result.trace)
+    assert any("LLM unavailable" in line for line in result.trace)
 
 
 # --- Edge-case queries through the whole pipeline ---------------------------
@@ -153,3 +155,60 @@ def test_edge_case_queries_do_not_crash(grounded_retriever, query):
     result = agent.handle(query)
     assert isinstance(result.answer, str) and result.answer != ""
     assert isinstance(result.trace, list) and len(result.trace) >= 1
+
+
+# --- _default_llm: LLM_PROVIDER selection (model-agnostic summarizer) ------
+# Constructing BedrockSummarizer()/GroqSummarizer() makes no network call
+# (both lazy-load their client on first real use), so these are free and
+# safe to run without credentials.
+
+
+def test_default_llm_is_bedrock_when_unset(monkeypatch):
+    monkeypatch.delenv("LLM_PROVIDER", raising=False)
+    assert isinstance(_default_llm(), BedrockSummarizer)
+
+
+def test_default_llm_is_bedrock_explicitly(monkeypatch):
+    monkeypatch.setenv("LLM_PROVIDER", "bedrock")
+    assert isinstance(_default_llm(), BedrockSummarizer)
+
+
+def test_default_llm_is_groq_when_selected(monkeypatch):
+    monkeypatch.setenv("LLM_PROVIDER", "groq")
+    assert isinstance(_default_llm(), GroqSummarizer)
+
+
+def test_default_llm_provider_selection_is_case_insensitive(monkeypatch):
+    monkeypatch.setenv("LLM_PROVIDER", "GROQ")
+    assert isinstance(_default_llm(), GroqSummarizer)
+
+
+def test_default_llm_rejects_unknown_provider(monkeypatch):
+    monkeypatch.setenv("LLM_PROVIDER", "openai")
+    with pytest.raises(ValueError, match="openai"):
+        _default_llm()
+
+
+def test_default_llm_is_read_fresh_not_cached_at_import(monkeypatch):
+    # Regression guard: an earlier version of this selection logic read
+    # LLM_PROVIDER into a module-level constant at import time, so
+    # switching it mid-process (e.g. between two ComplianceAgentGraph()
+    # instances, or across tests) silently had no effect.
+    monkeypatch.setenv("LLM_PROVIDER", "bedrock")
+    assert isinstance(_default_llm(), BedrockSummarizer)
+    monkeypatch.setenv("LLM_PROVIDER", "groq")
+    assert isinstance(_default_llm(), GroqSummarizer)
+
+
+def test_compliance_agent_graph_uses_default_llm_when_none_passed(monkeypatch, grounded_retriever):
+    monkeypatch.setenv("LLM_PROVIDER", "groq")
+    agent = ComplianceAgentGraph(retriever=grounded_retriever)
+    assert isinstance(agent.llm, GroqSummarizer)
+
+
+def test_compliance_agent_graph_explicit_llm_overrides_provider_env(monkeypatch, grounded_retriever):
+    # An explicit llm= always wins, regardless of LLM_PROVIDER.
+    monkeypatch.setenv("LLM_PROVIDER", "groq")
+    fake_llm = _FakeSummarizer()
+    agent = ComplianceAgentGraph(llm=fake_llm, retriever=grounded_retriever)
+    assert agent.llm is fake_llm

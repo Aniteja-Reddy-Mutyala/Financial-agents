@@ -8,10 +8,12 @@ A small, locally-runnable recreation of a multi-domain compliance agent
 (BSA/AML, FDA e-records, HIPAA, SOX), built to mirror (at demo scale) the
 Gen AI Engineer work described for the Northern Trust project: LangGraph
 multi-agent orchestration, a dense-embedding RAG pipeline over regulatory
-text (Amazon Bedrock Titan embeddings, not TF-IDF), intent classification,
-and an LLM call for the final answer — here routed through Amazon Bedrock
-instead of Anthropic/OpenAI. See [README.md](README.md) for the full
-architecture and how each piece maps back to the original project.
+text (always Amazon Bedrock Titan embeddings, not TF-IDF — Groq has no
+embeddings API), intent classification, and an LLM call for the final
+answer — **model-agnostic between Amazon Bedrock and Groq** (an
+open-weight model), selected via `LLM_PROVIDER`. See
+[README.md](README.md) for the full architecture and how each piece maps
+back to the original project.
 
 ## Running things
 
@@ -20,6 +22,7 @@ python3 -m pip install -r requirements.txt   # langgraph, langchain-aws, boto3, 
 python3 src/build_embeddings.py              # one-time: embed data/kb.json -> data/embeddings.npz (real, billed, ~$0.005, resumable)
 python3 demo.py                              # CLI: run sample queries end-to-end (calls Bedrock live)
 python3 demo.py "your question here"         # CLI: ask one question
+LLM_PROVIDER=groq python3 demo.py "..."      # same, but the final answer comes from Groq instead of Bedrock
 streamlit run app_ui.py                      # web UI: chat interface, has a free offline-mode toggle
 
 python3 -m pytest                            # full test suite — no AWS calls, no cost
@@ -31,11 +34,12 @@ python3 eval/run_eval.py --sample 50         # pilot a subset first
 python3 eval/generate_report.py              # precision/recall/F1 report from eval/results.json
 ```
 
-Some one-off scripts (`eval/run_judge.py`) need secrets from a
-project-local `.env` file (see `.env.example`) — nothing auto-loads it,
-source it explicitly: `set -a && source .env && set +a && <command>`.
-See `run-evaluation-suite` before touching `.env` or anything that reads
-a secret from it; getting the sourcing wrong has twice printed a real
+`GROQ_API_KEY` (needed whenever `LLM_PROVIDER=groq`, and by
+`eval/run_judge.py`) lives in a project-local `.env` file (see
+`.env.example`) — nothing auto-loads it, source it explicitly:
+`set -a && source .env && set +a && <command>`. See
+`run-evaluation-suite` before touching `.env` or anything that reads a
+secret from it; getting the sourcing wrong has twice printed a real
 token into a terminal/conversation in this project's history.
 
 `python3 src/build_embeddings.py` must be run once before the app can
@@ -44,13 +48,13 @@ doesn't exist until you build it) — see `bedrock-rag-retrieval` before
 assuming it's already there or re-running it casually.
 
 `tests/` covers the intent classifier, retriever machinery, routing/
-verifier logic, and the Bedrock LLM + embeddings clients — all mocked
-except `test_live_bedrock.py` and `test_live_rag.py`, both skipped by
-default (both make real, billed Bedrock calls — LLM and embeddings
-respectively). Keep new tests free of real AWS calls unless they're
-explicitly gated the same way. Load **`write-compliance-tests`** before
-adding tests — it has the coverage pattern, mocking conventions, and
-where each kind of test belongs.
+verifier logic, and both LLM clients (Bedrock and Groq) + the embeddings
+client — all mocked except `test_live_bedrock.py` and `test_live_rag.py`,
+both skipped by default (both make real, billed Bedrock calls — LLM and
+embeddings respectively). Keep new tests free of real network calls
+unless they're explicitly gated the same way. Load
+**`write-compliance-tests`** before adding tests — it has the coverage
+pattern, mocking conventions, and where each kind of test belongs.
 
 ## Before changing specific areas, load the matching skill
 
@@ -62,8 +66,10 @@ editing rather than guessing from this summary:
   LangGraph pipeline (nodes, edges, `ComplianceState`, routing).
 - **`add-ecfr-regulation`** — before adding/expanding the regulatory
   knowledge base (`data/kb.json`, `data/raw/`, `src/parse_ecfr.py`).
-- **`bedrock-llm-integration`** — before changing the LLM/Bedrock call
-  (`src/bedrock_llm.py`, model choice, prompts, cost/fallback behavior).
+- **`bedrock-llm-integration`** — before changing the final-answer LLM
+  call (`src/bedrock_llm.py`, `src/groq_llm.py`, `src/llm_prompts.py`,
+  provider/model choice, prompts, cost/fallback behavior — covers both
+  Bedrock and Groq, which are interchangeable here).
 - **`bedrock-rag-retrieval`** — before changing `src/retriever.py`,
   `src/bedrock_embeddings.py`, or `src/build_embeddings.py` (the
   dense-embedding retrieval pipeline, its one-time indexing job, cost/
@@ -80,7 +86,10 @@ editing rather than guessing from this summary:
 
 - Keep modules dependency-light and runnable standalone (`if __name__ ==
   "__main__":` smoke tests exist in `retriever.py`, `classifier.py`,
-  `bedrock_llm.py`, `agents.py` — keep that pattern for new modules).
+  `bedrock_llm.py`, `groq_llm.py`, `agents.py` — keep that pattern for
+  new modules). The `groq` package is intentionally **not** in
+  `requirements.txt` — it's an opt-in extra, only needed if
+  `LLM_PROVIDER=groq` is actually selected.
 - No framework beyond LangGraph/langchain_aws for orchestration, and
   Streamlit for the UI — don't introduce CrewAI, additional orchestration
   layers, or a different web/UI framework unless asked.

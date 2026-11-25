@@ -62,7 +62,7 @@ full-context fact pattern. Try any of these via `python3 demo.py
 |---------------------------------------------------------------|------------------------------------------------------------------|
 | LangGraph multi-agent orchestration (Orchestrator, Verifier, Planner) | A real `langgraph.graph.StateGraph` with conditional routing in [`src/agents.py`](src/agents.py) |
 | Node roles: Orchestrator, Planner, Verifier, Summarizer/Compliance agent | Graph nodes `classify_intent`, `plan`, `retrieve`, `verify`, `summarize`/`escalate` |
-| Hybrid LLM inference (Claude 3.5/4, Claude Instant v1) via LangChain | **langchain_aws** `ChatBedrockConverse` wired into the `summarize` node via [`src/bedrock_llm.py`](src/bedrock_llm.py) |
+| Hybrid LLM inference (Claude 3.5/4, Claude Instant v1) via LangChain | **Model-agnostic final-answer step**: `langchain_aws` `ChatBedrockConverse` ([`src/bedrock_llm.py`](src/bedrock_llm.py), default) or the `groq` SDK ([`src/groq_llm.py`](src/groq_llm.py)), switchable via `LLM_PROVIDER` — see "Stack" below |
 | RAG pipelines (PGVector, Redis, Chroma, Pinecone)              | Dense-embedding retriever in [`src/retriever.py`](src/retriever.py), backed by **Amazon Bedrock Titan embeddings** ([`src/bedrock_embeddings.py`](src/bedrock_embeddings.py)) precomputed offline by [`src/build_embeddings.py`](src/build_embeddings.py) |
 | Intent classification / financial query understanding          | `LogisticRegression` + TF-IDF in [`src/classifier.py`](src/classifier.py) |
 | Regulatory compliance data (SOC2, GDPR, HIPAA, SOX, 21 CFR 11)  | Real text pulled from the eCFR API: BSA/AML (31 CFR 1010/1020), FDA e-records (21 CFR 11), HIPAA (45 CFR 160/164), SOX-implementing SEC rules (17 CFR). GDPR and SOC2 are intentionally **not** included — see Honest limitations |
@@ -103,28 +103,48 @@ pattern).
 - **LangGraph** (`langgraph.graph.StateGraph`) for multi-agent orchestration
   — a real graph with nodes and a conditional edge, not hand-rolled control
   flow.
-- **langchain_aws** (`ChatBedrockConverse`) for LLM calls, same package
-  family named on the resume, just pointed at Bedrock instead of
-  Anthropic/OpenAI.
-- **Amazon Bedrock, `amazon.nova-micro-v1:0`** — Amazon's cheapest
-  on-demand text model, for the final answer — using your existing AWS
-  credentials (`~/.aws/credentials`, region `us-east-1` by default,
-  override with `AWS_REGION`). No extra setup needed if your account
-  already has Bedrock model access, which it does in this environment.
+- **The final-answer LLM is model-agnostic — Amazon Bedrock or Groq,
+  your choice.** Both implement the same `Summarizer` interface and
+  share one prompt ([`src/llm_prompts.py`](src/llm_prompts.py)), selected
+  via the `LLM_PROVIDER` env var (`bedrock`, the default, or `groq`) —
+  see [`src/agents.py`](src/agents.py)'s `_default_llm()`. An explicit
+  `llm=` override to `ComplianceAgentGraph` always wins over the env var.
+  - **`bedrock` (default): `langchain_aws` `ChatBedrockConverse` with
+    `amazon.nova-micro-v1:0`** — Amazon's cheapest on-demand text model —
+    using your existing AWS credentials (`~/.aws/credentials`, region
+    `us-east-1` by default, override with `AWS_REGION`). No extra setup
+    needed if your account already has Bedrock model access, which it
+    does in this environment.
+  - **`groq`: the `groq` SDK with `openai/gpt-oss-20b`** — an open-weight
+    reasoning model, no AWS cost for this step. Needs `GROQ_API_KEY` (see
+    `.env.example`); the `groq` package is an opt-in extra, not in
+    `requirements.txt`. `gpt-oss-20b` spends a variable share of its
+    token budget on internal reasoning before the visible answer, so
+    `GroqSummarizer` uses a generous `max_tokens` and treats empty output
+    as a provider failure (triggering the same template fallback a
+    Bedrock outage would) rather than returning a blank answer.
+  - **Retrieval always uses Bedrock regardless of this choice** — Groq
+    has no embeddings API, so picking `groq` only changes who answers,
+    not who retrieves; a `groq` query still makes one real Bedrock call
+    (embed) plus one real Groq call (summarize).
 - **Amazon Bedrock, `amazon.titan-embed-text-v2:0`** (512 dimensions,
   L2-normalized) — for retrieval. Chunk embeddings are precomputed once
   by `src/build_embeddings.py` and cached to `data/embeddings.npz`; each
-  live query makes exactly one more embedding call (plus the one
-  summarization call) — so **a live query now costs two real Bedrock
-  calls, not one.** See "Running it" below — the cached index must be
-  built before the app can answer anything live.
+  live query makes exactly one more embedding call (always Bedrock,
+  regardless of `LLM_PROVIDER`) plus one summarization call (Bedrock or
+  Groq, depending on `LLM_PROVIDER`) — so **a live query costs two real
+  API calls, not one**, at least one of which is always Bedrock. See
+  "Running it" below — the cached index must be built before the app can
+  answer anything live.
 - **scikit-learn** TF-IDF + `LogisticRegression` for intent classification
   only (retrieval no longer uses TF-IDF — see above) — no GPU needed for
   either model.
 
 To use a bigger Amazon model (e.g. for harder questions), change
 `DEFAULT_MODEL_ID` in `src/bedrock_llm.py` to `amazon.nova-lite-v1:0` or
-`amazon.nova-pro-v1:0` — same code, higher cost/quality.
+`amazon.nova-pro-v1:0` — same code, higher cost/quality. To switch the
+final answer to Groq instead, set `LLM_PROVIDER=groq` (needs
+`GROQ_API_KEY`) — no code change needed.
 
 ## Running it
 
@@ -204,12 +224,18 @@ src/build_embeddings.py one-time batch job: kb.json chunks -> embeddings.npz (re
 src/bedrock_embeddings.py  langchain_aws BedrockEmbeddings client (Titan Embed Text v2)
 src/retriever.py        chunking + dense-embedding cosine-similarity retrieval
 src/classifier.py       intent classifier for compliance queries
-src/bedrock_llm.py      langchain_aws ChatBedrockConverse client (Nova Micro)
-src/agents.py           LangGraph StateGraph: Orchestrator/Planner/Verifier/Summarizer
+src/llm_prompts.py      shared prompt text for the Summarizer step (both providers)
+src/bedrock_llm.py      langchain_aws ChatBedrockConverse client (Nova Micro) — Summarizer provider
+src/groq_llm.py         groq SDK client (openai/gpt-oss-20b) — alternate Summarizer provider
+src/agents.py           LangGraph StateGraph: Orchestrator/Planner/Verifier/Summarizer;
+                        LLM_PROVIDER env var picks bedrock_llm vs groq_llm
 demo.py                 CLI entry point
 app_ui.py               Streamlit web UI (chat interface over the same agent)
 tests/                  pytest suite (mocked) + two opt-in live-Bedrock test files
+eval/                   one-off 1,416-case eval suite + Groq LLM-judge — see run-evaluation-suite skill
 requirements.txt        langgraph, langchain-aws, langchain-core, boto3, scikit-learn, numpy, pytest, streamlit
+                        (groq is a separate opt-in extra, only if LLM_PROVIDER=groq or using eval/'s judge)
+.env.example            template for GROQ_API_KEY / GITHUB_TOKEN — copy to .env (gitignored), never commit real values
 CLAUDE.md               project guide for Claude Code
 ```
 

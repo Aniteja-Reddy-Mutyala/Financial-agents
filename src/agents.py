@@ -14,14 +14,38 @@ The conditional edge out of `verify` is the "error recovery" behavior from
 the resume: when retrieval doesn't clear the confidence bar, the graph
 routes to a human-escalation node instead of letting an LLM guess.
 """
+import os
 from types import SimpleNamespace
-from typing import List, Optional, TypedDict
+from typing import List, Optional, TypedDict, Union
 
 from langgraph.graph import END, StateGraph
 
 from bedrock_llm import BedrockSummarizer, BedrockUnavailable
 from classifier import IntentClassifier
+from groq_llm import GroqSummarizer, GroqUnavailable
 from retriever import Retriever
+
+Summarizer = Union[BedrockSummarizer, GroqSummarizer]
+SummarizerUnavailable = (BedrockUnavailable, GroqUnavailable)
+
+def _default_llm() -> Summarizer:
+    """Which Summarizer provider ComplianceAgentGraph builds by default when
+    no `llm=` override is passed — "bedrock" (Amazon Nova Micro, the
+    original default) or "groq" (an open-weight model, no AWS cost for
+    this step), chosen via the LLM_PROVIDER env var. Read fresh on every
+    call, not cached at import time, so switching it between
+    ComplianceAgentGraph() instances in the same process (tests included)
+    actually takes effect. Retrieval/embeddings are unaffected either way:
+    Groq has no embeddings API, so Bedrock Titan embeddings are used
+    regardless of this setting — see bedrock-rag-retrieval and
+    run-evaluation-suite skills.
+    """
+    provider = os.environ.get("LLM_PROVIDER", "bedrock").lower()
+    if provider == "groq":
+        return GroqSummarizer()
+    if provider != "bedrock":
+        raise ValueError(f"Unknown LLM_PROVIDER={provider!r} — expected 'bedrock' or 'groq'")
+    return BedrockSummarizer()
 
 # Tuned for dense Bedrock Titan-embedding cosine similarity, NOT the old
 # TF-IDF cosine scale (was 0.08). Measured against the real built index:
@@ -170,7 +194,7 @@ def _template_draft(state: ComplianceState, evidence) -> str:
     return "\n".join(lines)
 
 
-def summarizer_node(state: ComplianceState, *, llm: BedrockSummarizer) -> dict:
+def summarizer_node(state: ComplianceState, *, llm: Summarizer) -> dict:
     evidence = _unique_evidence(state)
     try:
         llm_answer = llm.summarize(
@@ -178,11 +202,11 @@ def summarizer_node(state: ComplianceState, *, llm: BedrockSummarizer) -> dict:
             intent_description=state["intent"]["description"],
             evidence=evidence,
         )
-        trace = _log(state, "Summarizer", f"generated via Bedrock ({llm.model_id})")
+        trace = _log(state, "Summarizer", f"generated via {llm.model_id}")
         citations = ", ".join(state["verification"]["citations"])
         answer = f"{llm_answer}\n\nCitations: {citations}"
-    except BedrockUnavailable as exc:
-        trace = _log(state, "Summarizer", f"Bedrock unavailable ({exc}); using template fallback")
+    except SummarizerUnavailable as exc:
+        trace = _log(state, "Summarizer", f"LLM unavailable ({exc}); using template fallback")
         answer = _template_draft(state, evidence)
     return {"answer": answer, "trace": trace}
 
@@ -204,10 +228,10 @@ def escalate_node(state: ComplianceState) -> dict:
 class ComplianceAgentGraph:
     """Builds and runs the LangGraph compliance pipeline."""
 
-    def __init__(self, llm: Optional[BedrockSummarizer] = None, retriever: Optional[Retriever] = None):
+    def __init__(self, llm: Optional[Summarizer] = None, retriever: Optional[Retriever] = None):
         self.intent_clf = IntentClassifier()
         self.retriever = retriever or Retriever.build()
-        self.llm = llm or BedrockSummarizer()
+        self.llm = llm or _default_llm()
         self.app = self._build_graph()
 
     def _build_graph(self):
