@@ -24,7 +24,7 @@ low and you get an empty response, not a truncated one.
 """
 import os
 
-from llm_prompts import SYSTEM_PROMPT, build_user_message
+from llm_prompts import CHITCHAT_SYSTEM_PROMPT, SYSTEM_PROMPT, build_chitchat_user_message, build_user_message
 
 DEFAULT_MODEL_ID = "openai/gpt-oss-20b"
 
@@ -71,6 +71,32 @@ class GroqSummarizer:
             if not content or not content.strip():
                 # gpt-oss burned its whole budget on hidden reasoning —
                 # same failure mode documented in eval/llm_judge.py.
+                raise GroqUnavailable(
+                    f"{self.model_id} returned empty content (likely exhausted "
+                    "max_tokens on internal reasoning before any visible output)"
+                )
+            return content.strip()
+        except GroqUnavailable:
+            raise
+        except Exception as exc:  # noqa: BLE001 - want to degrade gracefully either way
+            raise GroqUnavailable(str(exc)) from exc
+
+    def chitchat(self, query):
+        """A greeting/small-talk reply, bypassing retrieval entirely — see
+        chitchat_node in agents.py and llm_prompts.py's CHITCHAT_SYSTEM_PROMPT."""
+        user_message = build_chitchat_user_message(query)
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model_id,
+                messages=[
+                    {"role": "system", "content": CHITCHAT_SYSTEM_PROMPT},
+                    {"role": "user", "content": user_message},
+                ],
+                max_tokens=800,
+                temperature=self.temperature,
+            )
+            content = response.choices[0].message.content
+            if not content or not content.strip():
                 raise GroqUnavailable(
                     f"{self.model_id} returned empty content (likely exhausted "
                     "max_tokens on internal reasoning before any visible output)"

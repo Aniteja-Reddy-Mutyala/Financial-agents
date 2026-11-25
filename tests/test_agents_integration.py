@@ -27,12 +27,24 @@ class _FakeSummarizer:
         self.calls.append({"query": query, "intent_description": intent_description, "evidence": evidence})
         return self.reply
 
+    def chitchat(self, query):
+        self.calls.append({"query": query})
+        return "Hi! I'm a compliance assistant."
+
 
 class _EmptyRetriever:
     """Always returns zero hits, forcing the verifier to deny grounding."""
 
     def search(self, query, top_k=3):
         return []
+
+
+class _ExplodingRetriever:
+    """Raises if search() is ever called — used to prove a chitchat query
+    bypasses retrieval entirely rather than merely finding nothing."""
+
+    def search(self, query, top_k=3):
+        raise AssertionError("retrieval must be bypassed entirely for a chitchat query")
 
 
 class _FixedVectorEmbedder:
@@ -132,6 +144,44 @@ def test_bedrock_failure_falls_back_to_template_not_crash(grounded_retriever):
     assert result.verification["grounded"] is True
     assert "Relevant regulatory text" in result.answer
     assert "Citations:" in result.answer
+    assert any("LLM unavailable" in line for line in result.trace)
+
+
+# --- Chitchat branch (bypasses plan/retrieve/verify entirely) --------------
+
+
+def test_chitchat_query_bypasses_retrieval_and_calls_chitchat():
+    fake_llm = _FakeSummarizer()
+    agent = ComplianceAgentGraph(llm=fake_llm, retriever=_ExplodingRetriever())
+
+    result = agent.handle("Hi")
+
+    assert result.intent["intent"] == "chitchat"
+    assert result.verification == {
+        "grounded": True,
+        "citations": [],
+        "reason": "chitchat — not a regulatory question",
+    }
+    assert result.answer == "Hi! I'm a compliance assistant."
+    assert "Citations:" not in result.answer  # chitchat_node doesn't append one
+    assert any("classified intent -> chitchat" in line for line in result.trace)
+    assert not any("[Planner]" in line or "[Retriever]" in line for line in result.trace)
+
+
+def test_chitchat_failure_falls_back_to_static_reply_not_crash():
+    class _FailingChitchatSummarizer:
+        model_id = "fake-failing-model"
+
+        def chitchat(self, query):
+            from bedrock_llm import BedrockUnavailable
+
+            raise BedrockUnavailable("simulated outage")
+
+    agent = ComplianceAgentGraph(llm=_FailingChitchatSummarizer(), retriever=_ExplodingRetriever())
+    result = agent.handle("tell me about yourself")
+
+    assert result.verification["grounded"] is True
+    assert "compliance assistant" in result.answer
     assert any("LLM unavailable" in line for line in result.trace)
 
 

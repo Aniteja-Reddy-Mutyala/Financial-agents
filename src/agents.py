@@ -7,12 +7,21 @@ regulatory knowledge base and a cheap Amazon Bedrock model.
 
 Graph shape:
 
-    classify_intent -> plan -> retrieve -> verify --[grounded]--> summarize -> END
-                                                  \\--[not grounded]--> escalate -> END
+    classify_intent --[chitchat]--> chitchat -> END
+                    \\--[else]-----> plan -> retrieve -> verify --[grounded]--> summarize -> END
+                                                                \\--[not grounded]--> escalate -> END
 
 The conditional edge out of `verify` is the "error recovery" behavior from
 the resume: when retrieval doesn't clear the confidence bar, the graph
 routes to a human-escalation node instead of letting an LLM guess.
+
+The conditional edge out of `classify_intent` is separate: a greeting or
+"tell me about yourself"-style message (detected by classifier.py's
+is_chitchat() — a deterministic phrase check, NOT a label on
+IntentClassifier's model; see CHITCHAT_LABEL's comment for why) skips
+retrieval entirely and gets a short conversational reply instead of
+either a fabricated regulatory answer or the "route to a human"
+escalation message, which would be a strange response to "hi."
 """
 import os
 from types import SimpleNamespace
@@ -21,7 +30,7 @@ from typing import List, Optional, TypedDict, Union
 from langgraph.graph import END, StateGraph
 
 from bedrock_llm import BedrockSummarizer, BedrockUnavailable
-from classifier import IntentClassifier
+from classifier import CHITCHAT_DESCRIPTION, CHITCHAT_LABEL, IntentClassifier, is_chitchat
 from groq_llm import GroqSummarizer, GroqUnavailable
 from retriever import Retriever
 
@@ -104,9 +113,26 @@ def _unique_evidence(state: ComplianceState):
 
 
 def classify_intent_node(state: ComplianceState, *, intent_clf: IntentClassifier) -> dict:
-    intent = intent_clf.predict(state["query"])
+    # is_chitchat() runs first and is fully independent of IntentClassifier
+    # (see classifier.py's CHITCHAT_LABEL comment for why it's not a 9th
+    # trained label) — when it matches, skip the real classifier call
+    # entirely rather than discarding its guess, so the trace/UI badge
+    # never shows a mismatched real-domain label next to a chitchat reply.
+    if is_chitchat(state["query"]):
+        intent = {
+            "intent": CHITCHAT_LABEL,
+            "description": CHITCHAT_DESCRIPTION,
+            "confidence": 1.0,
+            "has_signal": True,
+        }
+    else:
+        intent = intent_clf.predict(state["query"])
     trace = _log(state, "Orchestrator", f"classified intent -> {intent['intent']}")
     return {"intent": intent, "trace": trace}
+
+
+def route_after_classify(state: ComplianceState) -> str:
+    return "chitchat" if state["intent"]["intent"] == CHITCHAT_LABEL else "plan"
 
 
 def planner_node(state: ComplianceState) -> dict:
@@ -230,6 +256,29 @@ def summarizer_node(state: ComplianceState, *, llm: Summarizer) -> dict:
     return {"answer": answer, "trace": trace}
 
 
+def chitchat_node(state: ComplianceState, *, llm: Summarizer) -> dict:
+    """Greeting/small-talk reply, bypassing plan/retrieve/verify entirely —
+    see route_after_classify. Sets a `verification` dict (grounded=True,
+    no citations) purely so downstream consumers (app_ui.py, demo.py) that
+    read `result.verification["grounded"]`/`["citations"]` unconditionally
+    don't need a special case for this path.
+    """
+    try:
+        llm_answer = llm.chitchat(state["query"])
+        trace = _log(state, "Summarizer", f"generated chitchat reply via {llm.model_id}")
+        answer = llm_answer
+    except SummarizerUnavailable as exc:
+        trace = _log(state, "Summarizer", f"LLM unavailable ({exc}); using static chitchat fallback")
+        answer = (
+            "Hi! I'm a compliance assistant that answers BSA/AML, FDA "
+            "electronic records, HIPAA, and SOX questions by retrieving and "
+            "citing the actual regulatory text — try asking something like "
+            "\"what is the CTR threshold for a cash deposit?\""
+        )
+    verification = {"grounded": True, "citations": [], "reason": "chitchat — not a regulatory question"}
+    return {"answer": answer, "verification": verification, "trace": trace}
+
+
 def escalate_node(state: ComplianceState) -> dict:
     trace = _log(state, "Summarizer", "not grounded; routing to human compliance officer")
     answer = (
@@ -256,6 +305,7 @@ class ComplianceAgentGraph:
     def _build_graph(self):
         graph = StateGraph(ComplianceState)
         graph.add_node("classify_intent", lambda s: classify_intent_node(s, intent_clf=self.intent_clf))
+        graph.add_node("chitchat", lambda s: chitchat_node(s, llm=self.llm))
         graph.add_node("plan", planner_node)
         graph.add_node("retrieve", lambda s: retriever_node(s, retriever=self.retriever))
         graph.add_node("verify", verifier_node)
@@ -263,12 +313,15 @@ class ComplianceAgentGraph:
         graph.add_node("escalate", escalate_node)
 
         graph.set_entry_point("classify_intent")
-        graph.add_edge("classify_intent", "plan")
+        graph.add_conditional_edges(
+            "classify_intent", route_after_classify, {"chitchat": "chitchat", "plan": "plan"}
+        )
         graph.add_edge("plan", "retrieve")
         graph.add_edge("retrieve", "verify")
         graph.add_conditional_edges(
             "verify", route_after_verify, {"summarize": "summarize", "escalate": "escalate"}
         )
+        graph.add_edge("chitchat", END)
         graph.add_edge("summarize", END)
         graph.add_edge("escalate", END)
         return graph.compile()

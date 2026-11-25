@@ -29,6 +29,10 @@ the agent:
    answer from the verified regulatory text. Falls back to a templated
    draft if Bedrock is unreachable.
 
+A greeting or "tell me about yourself"-style message (e.g. *"hi"*) skips
+steps 2-4 entirely and gets a short, warm conversational reply instead —
+see `classifier.py::is_chitchat` and `agents.py::chitchat_node`.
+
 ## Example queries
 
 Factual lookups — "what does the regulation say":

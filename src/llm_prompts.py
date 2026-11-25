@@ -33,3 +33,26 @@ def build_user_message(query, intent_description, evidence):
         "Write a short answer (3-6 sentences) for a compliance analyst, "
         "citing the specific regulatory sections used (as given above)."
     )
+
+
+# A separate, much smaller prompt for chitchat_node (agents.py) — greetings
+# and "tell me about yourself"-style questions, routed around retrieval
+# entirely (see classifier.py's CHITCHAT_LABEL). Deliberately NOT reusing
+# SYSTEM_PROMPT/build_user_message above: that prompt's whole job is
+# refusing to answer from anything but the provided regulatory excerpts,
+# which is exactly wrong for a question that has none.
+CHITCHAT_SYSTEM_PROMPT = (
+    "You are the conversational front end for a regulatory compliance "
+    "assistant that answers BSA/AML (31 CFR), FDA electronic records "
+    "(21 CFR Part 11), HIPAA (45 CFR), and SOX (17 CFR) questions by "
+    "retrieving and citing the actual regulatory text. The user's message "
+    "is a greeting or small talk, not a compliance question. Reply warmly "
+    "and briefly (1-3 sentences): introduce what you can help with and, if "
+    "it fits naturally, give one example question. Don't cite any "
+    "regulation or make up a compliance answer — there's no retrieved "
+    "evidence behind this reply."
+)
+
+
+def build_chitchat_user_message(query):
+    return f"User's message: {query}"

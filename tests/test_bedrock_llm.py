@@ -89,6 +89,32 @@ def test_summarize_with_empty_evidence_does_not_crash():
     assert result == "No relevant regulation found."
 
 
+def test_chitchat_returns_stripped_model_content():
+    fake = _FakeChatModel(reply="  Hi! I'm a compliance assistant.  \n")
+    summarizer = _summarizer_with_fake_llm(fake)
+    result = summarizer.chitchat("hi")
+    assert result == "Hi! I'm a compliance assistant."
+
+
+def test_chitchat_passes_chitchat_system_prompt_not_the_compliance_one():
+    fake = _FakeChatModel()
+    summarizer = _summarizer_with_fake_llm(fake)
+    summarizer.chitchat("tell me about yourself")
+    assert fake.received_messages is not None
+    system_msg, human_msg = fake.received_messages
+    # Must use the chitchat prompt, not SYSTEM_PROMPT (which demands
+    # answering only from regulatory excerpts — wrong for a greeting).
+    assert "conversational front end" in system_msg.content
+    assert "Answer ONLY using the provided regulatory excerpts" not in system_msg.content
+    assert "tell me about yourself" in human_msg.content
+
+
+def test_chitchat_raises_bedrock_unavailable_on_failure():
+    summarizer = _summarizer_with_fake_llm(_FailingChatModel())
+    with pytest.raises(BedrockUnavailable):
+        summarizer.chitchat("hi")
+
+
 def test_default_model_id_is_cheapest_nova_model():
     # Regression guard: this project is specifically meant to use the
     # cheapest Amazon model. If this ever changes it should be a deliberate
