@@ -66,8 +66,10 @@ def test_summarize_passes_system_and_human_messages():
     assert len(fake.received_messages) == 2
     system_msg, human_msg = fake.received_messages
     assert "regulatory compliance assistant" in system_msg.content
+    assert "conversational" in system_msg.content
     assert "do we need to file a SAR?" in human_msg.content
     assert "31 CFR 1020.320" in human_msg.content
+    assert "conversational" in human_msg.content
 
 
 def test_summarize_raises_bedrock_unavailable_on_failure():
@@ -87,6 +89,32 @@ def test_summarize_with_empty_evidence_does_not_crash():
         query="unrelated question", intent_description="unknown", evidence=[]
     )
     assert result == "No relevant regulation found."
+
+
+def test_respond_ungrounded_returns_stripped_model_content():
+    fake = _FakeChatModel(reply="  Hi! I'm a compliance assistant.  \n")
+    summarizer = _summarizer_with_fake_llm(fake)
+    result = summarizer.respond_ungrounded("hi")
+    assert result == "Hi! I'm a compliance assistant."
+
+
+def test_respond_ungrounded_passes_ungrounded_system_prompt_not_the_compliance_one():
+    fake = _FakeChatModel()
+    summarizer = _summarizer_with_fake_llm(fake)
+    summarizer.respond_ungrounded("tell me about yourself")
+    assert fake.received_messages is not None
+    system_msg, human_msg = fake.received_messages
+    # Must use the ungrounded prompt, not SYSTEM_PROMPT (which demands
+    # answering only from regulatory excerpts — wrong when there are none).
+    assert "conversational front end" in system_msg.content
+    assert "Answer ONLY using the provided regulatory excerpts" not in system_msg.content
+    assert "tell me about yourself" in human_msg.content
+
+
+def test_respond_ungrounded_raises_bedrock_unavailable_on_failure():
+    summarizer = _summarizer_with_fake_llm(_FailingChatModel())
+    with pytest.raises(BedrockUnavailable):
+        summarizer.respond_ungrounded("hi")
 
 
 def test_default_model_id_is_cheapest_nova_model():

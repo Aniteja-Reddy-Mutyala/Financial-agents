@@ -6,23 +6,25 @@ part of the original project, routed through AWS Bedrock via langchain_aws
 Defaults to Amazon Nova Micro — the cheapest Amazon text model on Bedrock —
 and raises BedrockUnavailable on any failure so callers can fall back
 gracefully instead of hard-failing.
+
+One of two interchangeable Summarizer providers — see groq_llm.py for the
+other, and agents.py's ComplianceAgentGraph for how a provider is chosen.
+Both share the exact same prompt text (llm_prompts.py) so switching
+providers changes cost/latency/model quality, not what's being asked.
 """
 import os
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
+from llm_prompts import (
+    SYSTEM_PROMPT,
+    UNGROUNDED_SYSTEM_PROMPT,
+    build_ungrounded_user_message,
+    build_user_message,
+)
+
 DEFAULT_MODEL_ID = "amazon.nova-micro-v1:0"
 DEFAULT_REGION = os.environ.get("AWS_REGION", "us-east-1")
-
-SYSTEM_PROMPT = (
-    "You are a regulatory compliance assistant covering BSA/AML (31 CFR), "
-    "FDA electronic records (21 CFR Part 11), HIPAA (45 CFR), and SOX-related "
-    "SEC rules (17 CFR). Answer ONLY using the provided regulatory excerpts. "
-    "Be concise and precise, cite the exact section numbers given in the "
-    "excerpts (e.g. 31 CFR 1020.320, 45 CFR 164.502), and never state an "
-    "obligation that isn't supported by the excerpts. If the excerpts don't "
-    "fully answer the question, say what's missing."
-)
 
 
 class BedrockUnavailable(Exception):
@@ -53,19 +55,25 @@ class BedrockSummarizer:
 
     def summarize(self, query, intent_description, evidence):
         """evidence: list of {source_id, title, text} dicts already filtered to citations."""
-        excerpt_block = "\n\n".join(
-            f"{e['source_id']} — {e['title']}\n{e['text']}" for e in evidence
-        )
-        user_message = (
-            f"Compliance question: {query}\n"
-            f"Detected intent: {intent_description}\n\n"
-            f"Regulatory excerpts:\n{excerpt_block}\n\n"
-            "Write a short answer (3-6 sentences) for a compliance analyst, "
-            "citing the specific regulatory sections used (as given above)."
-        )
+        user_message = build_user_message(query, intent_description, evidence)
         try:
             response = self.llm.invoke(
                 [SystemMessage(content=SYSTEM_PROMPT), HumanMessage(content=user_message)]
+            )
+            return response.content.strip()
+        except Exception as exc:  # noqa: BLE001 - want to degrade gracefully either way
+            raise BedrockUnavailable(str(exc)) from exc
+
+    def respond_ungrounded(self, query):
+        """A reply for a query retrieval did NOT ground — see escalate_node
+        in agents.py and llm_prompts.py's UNGROUNDED_SYSTEM_PROMPT. Never
+        passed any retrieved evidence, so it cannot cite a hallucinated
+        regulation no matter what it says — that's enforced by this method
+        simply having none to hand it, not by the prompt's wording alone."""
+        user_message = build_ungrounded_user_message(query)
+        try:
+            response = self.llm.invoke(
+                [SystemMessage(content=UNGROUNDED_SYSTEM_PROMPT), HumanMessage(content=user_message)]
             )
             return response.content.strip()
         except Exception as exc:  # noqa: BLE001 - want to degrade gracefully either way

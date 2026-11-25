@@ -15,15 +15,20 @@ classify_intent -> plan -> retrieve -> verify --[grounded]--> summarize -> END
                                               \--[not grounded]--> escalate -> END
 ```
 
-- `verify` is the compliance gate: it decides `grounded` from retrieval
-  score against `MIN_SCORE`, and `route_after_verify` sends the state to
-  either `summarize` (calls the LLM) or `escalate` (templated human-handoff
-  message, no LLM call). Never let `summarize` run on ungrounded state —
-  that's the whole point of the verifier agent. `MIN_SCORE` is tuned to
-  whatever similarity metric `retriever.py` currently produces (dense
-  Titan-embedding cosine similarity, not the TF-IDF cosine it used to be)
-  — if you change how `retriever.py` scores things, `MIN_SCORE` almost
-  certainly needs recalibrating too; see `bedrock-rag-retrieval`.
+`verify` is the compliance gate: it decides `grounded` from retrieval
+score against `MIN_SCORE`, and `route_after_verify` sends the state to
+either `summarize` (an LLM call grounded in retrieved evidence) or
+`escalate` (an LLM call with NO evidence — see "escalate_node: LLM-
+powered, never given evidence" below; it is not the static message it
+used to be). Never let `summarize` run on ungrounded state, and never
+let `escalate_node` receive any retrieved evidence — those are the two
+halves of the whole anti-hallucination design here: the grounded path
+only ever cites what it was given, and the ungrounded path has nothing
+to cite no matter what it says. `MIN_SCORE` is tuned to whatever
+similarity metric `retriever.py` currently produces (dense Titan-
+embedding cosine similarity, not the TF-IDF cosine it used to be) — if
+you change how `retriever.py` scores things, `MIN_SCORE` almost
+certainly needs recalibrating too; see `bedrock-rag-retrieval`.
 
 ## Node function conventions
 
@@ -112,3 +117,90 @@ If you pick this up, flag the added cost/latency to the user first (every
 grounded query would need a third Bedrock call) — see
 `bedrock-llm-integration`'s cost-awareness rules — and update README's
 "Honest limitations" to match, don't just quietly patch it in.
+
+## Fixed: `NO_PAD_INTENTS` — padding hurts broad, multi-topic intents even when `has_signal` is true
+
+A *different* padding problem from the one above (that one was about a
+*wrong/noise* intent description; this one is about a *correct*
+classification whose description is still too broad to help): a query
+can be correctly, confidently classified into `fda_e_records` or
+`hipaa_privacy_security` and still have its retrieval query degraded by
+padding, because those two intents' single fixed description ("FDA
+electronic records and electronic signature requirements" / "HIPAA
+Privacy and Security Rule requirements...") can't represent every
+sub-topic under it. Measured (GitHub issue #1): padding with the
+FDA description skewed retrieval toward "signature" vocabulary even for
+a direct, correctly-classified "audit trail" question, so `21 CFR 11.10`
+(the section that actually covers audit trails) never made the top
+results. HIPAA (102 sections, much broader) has the same shape of
+problem.
+
+`planner_node` now checks `intent in NO_PAD_INTENTS` *before* the
+`has_signal` check — for `fda_e_records`/`hipaa_privacy_security`, it
+never pads regardless of `has_signal`, and searches the raw query alone
+(same `retriever_node` short-circuit as the `has_signal=False` path
+above, so this also saves a Bedrock call). Don't add a third intent to
+`NO_PAD_INTENTS` just because it has many sections — the two already in
+it were added because padding was *measured* to hurt them, not because
+of section count alone; measure before adding more.
+
+This fix, plus a sentence-boundary chunking fix and a bounded neighbor-
+chunk evidence expansion in `retriever.py` (see `bedrock-rag-retrieval`)
+and a clause-awareness prompt addition (see `bedrock-llm-integration`),
+closed GitHub issue #1 — see README's "Honest limitations" for the full,
+measured before/after.
+
+## escalate_node: LLM-powered, never given evidence — and why that's the whole point
+
+A greeting ("Hi") used to either get force-fit into a random regulatory
+domain (confusing) or, after the has_signal fix, correctly fail to
+ground and get a static "route to a human compliance officer" message —
+a strange reply to "hi." `escalate_node` now calls the LLM too (via a
+new `Summarizer.respond_ungrounded(query)` method, separate from
+`.summarize()` — see `bedrock-llm-integration`), using a prompt
+(`llm_prompts.py::UNGROUNDED_SYSTEM_PROMPT`) that lets the model decide
+the tone: warm and conversational for a greeting, or an honest "I don't
+have grounded evidence for that" for a real-sounding but uncovered
+compliance question.
+
+**This is deliberately the *only* place a greeting is handled** — there
+is no separate chitchat detector, classifier label, or phrase list
+anywhere. A greeting is not special-cased at all; it just happens not to
+ground (same as any other query that doesn't clear `MIN_SCORE`), and
+`escalate_node` handles every ungrounded query the same way regardless
+of why it's ungrounded.
+
+**Two earlier, narrower attempts were tried and replaced by this one:**
+(1) adding `"chitchat"` as a 9th trained label directly on
+`IntentClassifier` — reverted after a measured regression: with only ~3
+training examples per class already, the new class's intercept was
+enough to flip several previously-correct real compliance queries (e.g.
+"Tell me the format of SAR," sharing the token "tell" with a chitchat
+example) purely from the fragile model's shifted decision boundary, not
+genuine ambiguity; (2) a separate, deterministic `is_chitchat(query)`
+phrase/substring check run before the real classifier — this avoided
+regressing the classifier, but needed constant hand-expansion for every
+new phrasing a real user typed ("Hi,there" with no space, "tell me
+something about yourself") and could never cover all of them. Letting
+the LLM itself judge tone — with no evidence to misuse, since
+`escalate_node` never has any — handles arbitrary phrasing without a
+maintained list and without touching the classifier at all. If you're
+tempted to special-case greeting detection again, read this history
+first; the LLM-judgment approach here is the one that actually stopped
+needing patches.
+
+**Why this doesn't reopen the hallucination risk** `summarize()`'s
+prompt has needed real fixes for (see `bedrock-llm-integration`'s
+"Prompting" section and GitHub issue #1): `escalate_node` is only ever
+reached when retrieval did NOT ground the query, and it is never handed
+`state["evidence"]` — not filtered, not summarized, not at all. The
+model has nothing to cite from in this path no matter how it's
+prompted, so there's no instruction for it to ignore or evidence for it
+to misuse. That's a structural guarantee from the code, not a trust
+assumption about the model's behavior.
+
+`escalate_node`'s static fallback (used only when the LLM call itself
+fails — `SummarizerUnavailable`) is unchanged from before: the templated
+"could not confidently ground this answer... recommend routing to a
+human compliance officer" message, so a provider outage degrades the
+same way it always has rather than showing nothing.

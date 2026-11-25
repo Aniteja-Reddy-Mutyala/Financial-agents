@@ -8,6 +8,7 @@ import pytest
 
 from agents import (
     MIN_SCORE,
+    NO_PAD_INTENTS,
     _unique_evidence,
     escalate_node,
     planner_node,
@@ -103,17 +104,48 @@ def test_route_to_escalate_when_not_grounded():
     assert route_after_verify(state) == "escalate"
 
 
-# --- escalate_node: the human-handoff branch --------------------------------
+# --- escalate_node: the ungrounded branch (LLM, never given evidence) ------
 
 
-def test_escalate_node_produces_warning_and_no_citations():
+class _FakeEscalateSummarizer:
+    model_id = "fake-test-model"
+
+    def __init__(self, reply="Hi! Ask me about BSA/AML, FDA, HIPAA, or SOX."):
+        self.reply = reply
+        self.calls = []
+
+    def respond_ungrounded(self, query):
+        self.calls.append(query)
+        return self.reply
+
+
+class _FailingEscalateSummarizer:
+    model_id = "fake-test-model"
+
+    def respond_ungrounded(self, query):
+        from bedrock_llm import BedrockUnavailable
+
+        raise BedrockUnavailable("simulated provider outage")
+
+
+def test_escalate_node_returns_llm_reply():
     state = _base_state([])
     state["verification"] = {"grounded": False, "citations": [], "reason": "no evidence"}
-    update = escalate_node(state)
+    fake = _FakeEscalateSummarizer(reply="Hello! Ask me about BSA/AML, FDA, HIPAA, or SOX.")
+    update = escalate_node(state, llm=fake)
+    assert update["answer"] == "Hello! Ask me about BSA/AML, FDA, HIPAA, or SOX."
+    assert fake.calls == ["do we need to file a SAR"]  # the query, nothing else
+    assert any("generated ungrounded reply" in line for line in update["trace"])
+
+
+def test_escalate_node_falls_back_to_static_warning_when_llm_unavailable():
+    state = _base_state([])
+    state["verification"] = {"grounded": False, "citations": [], "reason": "no evidence"}
+    update = escalate_node(state, llm=_FailingEscalateSummarizer())
     assert "⚠️" in update["answer"]
     assert "human compliance officer" in update["answer"]
     assert "Citations:" not in update["answer"]
-    assert any("not grounded" in line for line in update["trace"])
+    assert any("LLM unavailable" in line for line in update["trace"])
 
 
 # --- _unique_evidence: feeds the Summarizer ---------------------------------
@@ -247,3 +279,36 @@ def test_planner_does_not_pad_query_when_classifier_has_no_signal():
     }
     result = planner_node(state)
     assert result["plan"]["retrieval_query"] == state["query"]
+
+
+# --- planner_node: NO_PAD_INTENTS override has_signal for broad intents ---
+
+
+@pytest.mark.parametrize("intent", sorted(NO_PAD_INTENTS))
+def test_planner_does_not_pad_broad_multi_topic_intents_even_with_signal(intent):
+    # GitHub issue #1: fda_e_records's and hipaa_privacy_security's single
+    # fixed description can't represent all of their sub-topics, so padding
+    # with it skewed retrieval toward whichever sub-topic the description's
+    # wording favors (e.g. signatures) even for a real, on-topic, clearly
+    # classified question about a different sub-topic (e.g. audit trails).
+    # has_signal=True here proves the override applies regardless of
+    # classifier confidence/signal, not just as a special case of it.
+    state = {
+        "query": "does our electronic record system need an audit trail",
+        "intent": {"intent": intent, "description": "some broad description", "has_signal": True},
+        "trace": [],
+    }
+    result = planner_node(state)
+    assert result["plan"]["retrieval_query"] == state["query"]
+
+
+def test_planner_still_pads_non_broad_intents_with_signal():
+    # Regression guard: the NO_PAD_INTENTS override must not swallow the
+    # normal padding path for every other intent.
+    state = {
+        "query": "do we need to file a SAR",
+        "intent": {"intent": "sar_filing", "description": "SAR filing obligations", "has_signal": True},
+        "trace": [],
+    }
+    result = planner_node(state)
+    assert result["plan"]["retrieval_query"] == "do we need to file a SAR SAR filing obligations"

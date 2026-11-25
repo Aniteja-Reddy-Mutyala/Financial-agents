@@ -8,7 +8,9 @@ test_live_bedrock.py.
 """
 import pytest
 
-from agents import ComplianceAgentGraph
+from agents import ComplianceAgentGraph, _default_llm
+from bedrock_llm import BedrockSummarizer
+from groq_llm import GroqSummarizer
 from retriever import Chunk, Retriever
 
 
@@ -24,6 +26,10 @@ class _FakeSummarizer:
     def summarize(self, query, intent_description, evidence):
         self.calls.append({"query": query, "intent_description": intent_description, "evidence": evidence})
         return self.reply
+
+    def respond_ungrounded(self, query):
+        self.calls.append({"query": query})
+        return "Hi! I'm a compliance assistant."
 
 
 class _EmptyRetriever:
@@ -97,20 +103,59 @@ def test_summarizer_receives_only_cited_evidence(grounded_retriever):
     assert passed_ids == set(result.verification["citations"])
 
 
-# --- Not-grounded (escalate) branch -----------------------------------------
+# --- Not-grounded (escalate) branch: LLM-powered, never given evidence ----
 
 
-def test_ungrounded_query_skips_llm_and_escalates():
+def test_ungrounded_query_calls_respond_ungrounded_not_summarize():
     fake_llm = _FakeSummarizer()
     agent = ComplianceAgentGraph(llm=fake_llm, retriever=_EmptyRetriever())
 
     result = agent.handle("do we need to file a SAR for this wire transfer")
 
     assert result.verification["grounded"] is False
-    assert fake_llm.calls == []  # LLM must NOT be called when ungrounded
+    # escalate_node calls respond_ungrounded(), never summarize() — the
+    # whole point is it's structurally impossible to hallucinate a
+    # citation here, because it's never handed any evidence to cite.
+    assert fake_llm.calls == [{"query": "do we need to file a SAR for this wire transfer"}]
+    assert result.answer == "Hi! I'm a compliance assistant."
+    assert "Citations:" not in result.answer
+    assert any("generated ungrounded reply" in line for line in result.trace)
+
+
+def test_ungrounded_query_falls_back_to_static_warning_when_llm_unavailable():
+    class _FailingEscalateSummarizer:
+        model_id = "fake-failing-model"
+
+        def respond_ungrounded(self, query):
+            from bedrock_llm import BedrockUnavailable
+
+            raise BedrockUnavailable("simulated outage")
+
+    agent = ComplianceAgentGraph(llm=_FailingEscalateSummarizer(), retriever=_EmptyRetriever())
+    result = agent.handle("do we need to file a SAR for this wire transfer")
+
+    assert result.verification["grounded"] is False
     assert "⚠️" in result.answer
     assert "human compliance officer" in result.answer
     assert "Citations:" not in result.answer
+    assert any("LLM unavailable" in line for line in result.trace)
+
+
+def test_greeting_still_goes_through_the_normal_pipeline_and_gets_a_conversational_reply():
+    # A greeting isn't special-cased anywhere in the graph any more (see
+    # edit-compliance-graph for why the earlier classifier-based chitchat
+    # detector was replaced) — it just happens to not ground, same as any
+    # other query that doesn't clear MIN_SCORE, and gets a conversational
+    # reply via the exact same escalate_node/respond_ungrounded path.
+    fake_llm = _FakeSummarizer()
+    agent = ComplianceAgentGraph(llm=fake_llm, retriever=_EmptyRetriever())
+
+    result = agent.handle("Hi")
+
+    assert result.verification["grounded"] is False
+    assert result.answer == "Hi! I'm a compliance assistant."
+    assert any("[Planner]" in line for line in result.trace)  # not bypassed
+    assert any("[Retriever]" in line for line in result.trace)
 
 
 def test_bedrock_failure_falls_back_to_template_not_crash(grounded_retriever):
@@ -130,7 +175,7 @@ def test_bedrock_failure_falls_back_to_template_not_crash(grounded_retriever):
     assert result.verification["grounded"] is True
     assert "Relevant regulatory text" in result.answer
     assert "Citations:" in result.answer
-    assert any("Bedrock unavailable" in line for line in result.trace)
+    assert any("LLM unavailable" in line for line in result.trace)
 
 
 # --- Edge-case queries through the whole pipeline ---------------------------
@@ -153,3 +198,60 @@ def test_edge_case_queries_do_not_crash(grounded_retriever, query):
     result = agent.handle(query)
     assert isinstance(result.answer, str) and result.answer != ""
     assert isinstance(result.trace, list) and len(result.trace) >= 1
+
+
+# --- _default_llm: LLM_PROVIDER selection (model-agnostic summarizer) ------
+# Constructing BedrockSummarizer()/GroqSummarizer() makes no network call
+# (both lazy-load their client on first real use), so these are free and
+# safe to run without credentials.
+
+
+def test_default_llm_is_bedrock_when_unset(monkeypatch):
+    monkeypatch.delenv("LLM_PROVIDER", raising=False)
+    assert isinstance(_default_llm(), BedrockSummarizer)
+
+
+def test_default_llm_is_bedrock_explicitly(monkeypatch):
+    monkeypatch.setenv("LLM_PROVIDER", "bedrock")
+    assert isinstance(_default_llm(), BedrockSummarizer)
+
+
+def test_default_llm_is_groq_when_selected(monkeypatch):
+    monkeypatch.setenv("LLM_PROVIDER", "groq")
+    assert isinstance(_default_llm(), GroqSummarizer)
+
+
+def test_default_llm_provider_selection_is_case_insensitive(monkeypatch):
+    monkeypatch.setenv("LLM_PROVIDER", "GROQ")
+    assert isinstance(_default_llm(), GroqSummarizer)
+
+
+def test_default_llm_rejects_unknown_provider(monkeypatch):
+    monkeypatch.setenv("LLM_PROVIDER", "openai")
+    with pytest.raises(ValueError, match="openai"):
+        _default_llm()
+
+
+def test_default_llm_is_read_fresh_not_cached_at_import(monkeypatch):
+    # Regression guard: an earlier version of this selection logic read
+    # LLM_PROVIDER into a module-level constant at import time, so
+    # switching it mid-process (e.g. between two ComplianceAgentGraph()
+    # instances, or across tests) silently had no effect.
+    monkeypatch.setenv("LLM_PROVIDER", "bedrock")
+    assert isinstance(_default_llm(), BedrockSummarizer)
+    monkeypatch.setenv("LLM_PROVIDER", "groq")
+    assert isinstance(_default_llm(), GroqSummarizer)
+
+
+def test_compliance_agent_graph_uses_default_llm_when_none_passed(monkeypatch, grounded_retriever):
+    monkeypatch.setenv("LLM_PROVIDER", "groq")
+    agent = ComplianceAgentGraph(retriever=grounded_retriever)
+    assert isinstance(agent.llm, GroqSummarizer)
+
+
+def test_compliance_agent_graph_explicit_llm_overrides_provider_env(monkeypatch, grounded_retriever):
+    # An explicit llm= always wins, regardless of LLM_PROVIDER.
+    monkeypatch.setenv("LLM_PROVIDER", "groq")
+    fake_llm = _FakeSummarizer()
+    agent = ComplianceAgentGraph(llm=fake_llm, retriever=grounded_retriever)
+    assert agent.llm is fake_llm

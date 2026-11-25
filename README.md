@@ -22,12 +22,21 @@ the agent:
    chunked sections (precomputed offline; see Stack below).
 4. **Verifies grounding** — a Compliance Verifier agent checks retrieval
    confidence before allowing an answer to ship. A **LangGraph conditional
-   edge** routes ungrounded queries to a human-escalation node instead of
-   letting an LLM guess.
+   edge** routes an ungrounded query to an escalation node instead of
+   letting the grounded-answer step guess.
 5. **Summarizes** — calls **Amazon Bedrock (Nova Micro)** via
    **langchain_aws**, the cheapest Amazon text model, to draft a cited
    answer from the verified regulatory text. Falls back to a templated
    draft if Bedrock is unreachable.
+
+A query that doesn't ground — a greeting like *"hi"*, or a real-sounding
+compliance question we just don't have regulatory evidence for — still
+gets an LLM-generated reply, not a canned message: the escalation node
+calls the same LLM with no retrieved evidence at all, so it can decide
+the right tone (warm for a greeting, an honest "I don't have grounded
+evidence for that" otherwise) without ever being able to cite a
+hallucinated regulation — there's structurally nothing for it to cite.
+See `agents.py::escalate_node` and `llm_prompts.py::UNGROUNDED_SYSTEM_PROMPT`.
 
 ## Example queries
 
@@ -62,7 +71,7 @@ full-context fact pattern. Try any of these via `python3 demo.py
 |---------------------------------------------------------------|------------------------------------------------------------------|
 | LangGraph multi-agent orchestration (Orchestrator, Verifier, Planner) | A real `langgraph.graph.StateGraph` with conditional routing in [`src/agents.py`](src/agents.py) |
 | Node roles: Orchestrator, Planner, Verifier, Summarizer/Compliance agent | Graph nodes `classify_intent`, `plan`, `retrieve`, `verify`, `summarize`/`escalate` |
-| Hybrid LLM inference (Claude 3.5/4, Claude Instant v1) via LangChain | **langchain_aws** `ChatBedrockConverse` wired into the `summarize` node via [`src/bedrock_llm.py`](src/bedrock_llm.py) |
+| Hybrid LLM inference (Claude 3.5/4, Claude Instant v1) via LangChain | **Model-agnostic final-answer step**: `langchain_aws` `ChatBedrockConverse` ([`src/bedrock_llm.py`](src/bedrock_llm.py), default) or the `groq` SDK ([`src/groq_llm.py`](src/groq_llm.py)), switchable via `LLM_PROVIDER` — see "Stack" below |
 | RAG pipelines (PGVector, Redis, Chroma, Pinecone)              | Dense-embedding retriever in [`src/retriever.py`](src/retriever.py), backed by **Amazon Bedrock Titan embeddings** ([`src/bedrock_embeddings.py`](src/bedrock_embeddings.py)) precomputed offline by [`src/build_embeddings.py`](src/build_embeddings.py) |
 | Intent classification / financial query understanding          | `LogisticRegression` + TF-IDF in [`src/classifier.py`](src/classifier.py) |
 | Regulatory compliance data (SOC2, GDPR, HIPAA, SOX, 21 CFR 11)  | Real text pulled from the eCFR API: BSA/AML (31 CFR 1010/1020), FDA e-records (21 CFR 11), HIPAA (45 CFR 160/164), SOX-implementing SEC rules (17 CFR). GDPR and SOC2 are intentionally **not** included — see Honest limitations |
@@ -103,28 +112,48 @@ pattern).
 - **LangGraph** (`langgraph.graph.StateGraph`) for multi-agent orchestration
   — a real graph with nodes and a conditional edge, not hand-rolled control
   flow.
-- **langchain_aws** (`ChatBedrockConverse`) for LLM calls, same package
-  family named on the resume, just pointed at Bedrock instead of
-  Anthropic/OpenAI.
-- **Amazon Bedrock, `amazon.nova-micro-v1:0`** — Amazon's cheapest
-  on-demand text model, for the final answer — using your existing AWS
-  credentials (`~/.aws/credentials`, region `us-east-1` by default,
-  override with `AWS_REGION`). No extra setup needed if your account
-  already has Bedrock model access, which it does in this environment.
+- **The final-answer LLM is model-agnostic — Amazon Bedrock or Groq,
+  your choice.** Both implement the same `Summarizer` interface and
+  share one prompt ([`src/llm_prompts.py`](src/llm_prompts.py)), selected
+  via the `LLM_PROVIDER` env var (`bedrock`, the default, or `groq`) —
+  see [`src/agents.py`](src/agents.py)'s `_default_llm()`. An explicit
+  `llm=` override to `ComplianceAgentGraph` always wins over the env var.
+  - **`bedrock` (default): `langchain_aws` `ChatBedrockConverse` with
+    `amazon.nova-micro-v1:0`** — Amazon's cheapest on-demand text model —
+    using your existing AWS credentials (`~/.aws/credentials`, region
+    `us-east-1` by default, override with `AWS_REGION`). No extra setup
+    needed if your account already has Bedrock model access, which it
+    does in this environment.
+  - **`groq`: the `groq` SDK with `openai/gpt-oss-20b`** — an open-weight
+    reasoning model, no AWS cost for this step. Needs `GROQ_API_KEY` (see
+    `.env.example`); the `groq` package is an opt-in extra, not in
+    `requirements.txt`. `gpt-oss-20b` spends a variable share of its
+    token budget on internal reasoning before the visible answer, so
+    `GroqSummarizer` uses a generous `max_tokens` and treats empty output
+    as a provider failure (triggering the same template fallback a
+    Bedrock outage would) rather than returning a blank answer.
+  - **Retrieval always uses Bedrock regardless of this choice** — Groq
+    has no embeddings API, so picking `groq` only changes who answers,
+    not who retrieves; a `groq` query still makes one real Bedrock call
+    (embed) plus one real Groq call (summarize).
 - **Amazon Bedrock, `amazon.titan-embed-text-v2:0`** (512 dimensions,
   L2-normalized) — for retrieval. Chunk embeddings are precomputed once
   by `src/build_embeddings.py` and cached to `data/embeddings.npz`; each
-  live query makes exactly one more embedding call (plus the one
-  summarization call) — so **a live query now costs two real Bedrock
-  calls, not one.** See "Running it" below — the cached index must be
-  built before the app can answer anything live.
+  live query makes exactly one more embedding call (always Bedrock,
+  regardless of `LLM_PROVIDER`) plus one summarization call (Bedrock or
+  Groq, depending on `LLM_PROVIDER`) — so **a live query costs two real
+  API calls, not one**, at least one of which is always Bedrock. See
+  "Running it" below — the cached index must be built before the app can
+  answer anything live.
 - **scikit-learn** TF-IDF + `LogisticRegression` for intent classification
   only (retrieval no longer uses TF-IDF — see above) — no GPU needed for
   either model.
 
 To use a bigger Amazon model (e.g. for harder questions), change
 `DEFAULT_MODEL_ID` in `src/bedrock_llm.py` to `amazon.nova-lite-v1:0` or
-`amazon.nova-pro-v1:0` — same code, higher cost/quality.
+`amazon.nova-pro-v1:0` — same code, higher cost/quality. To switch the
+final answer to Groq instead, set `LLM_PROVIDER=groq` (needs
+`GROQ_API_KEY`) — no code change needed.
 
 ## Running it
 
@@ -204,17 +233,142 @@ src/build_embeddings.py one-time batch job: kb.json chunks -> embeddings.npz (re
 src/bedrock_embeddings.py  langchain_aws BedrockEmbeddings client (Titan Embed Text v2)
 src/retriever.py        chunking + dense-embedding cosine-similarity retrieval
 src/classifier.py       intent classifier for compliance queries
-src/bedrock_llm.py      langchain_aws ChatBedrockConverse client (Nova Micro)
-src/agents.py           LangGraph StateGraph: Orchestrator/Planner/Verifier/Summarizer
+src/llm_prompts.py      shared prompt text for the Summarizer step (both providers)
+src/bedrock_llm.py      langchain_aws ChatBedrockConverse client (Nova Micro) — Summarizer provider
+src/groq_llm.py         groq SDK client (openai/gpt-oss-20b) — alternate Summarizer provider
+src/agents.py           LangGraph StateGraph: Orchestrator/Planner/Verifier/Summarizer;
+                        LLM_PROVIDER env var picks bedrock_llm vs groq_llm
 demo.py                 CLI entry point
 app_ui.py               Streamlit web UI (chat interface over the same agent)
 tests/                  pytest suite (mocked) + two opt-in live-Bedrock test files
+eval/                   one-off 1,416-case eval suite + Groq LLM-judge — see run-evaluation-suite skill
 requirements.txt        langgraph, langchain-aws, langchain-core, boto3, scikit-learn, numpy, pytest, streamlit
+                        (groq is a separate opt-in extra, only if LLM_PROVIDER=groq or using eval/'s judge)
+.env.example            template for GROQ_API_KEY / GITHUB_TOKEN — copy to .env (gitignored), never commit real values
 CLAUDE.md               project guide for Claude Code
 ```
 
 ## Honest limitations (vs. the real project)
 
+- **(Partially fixed — tracked as [GitHub issue #1](https://github.com/Aniteja-Reddy-Mutyala/Financial-agents/issues/1))**
+  Citation-domain-correctness (99.9% in `eval/REPORT.md`'s 1,415-case
+  structural eval) does not mean the generated answer is actually
+  correct. A separate semantic LLM-judge pass (`eval/JUDGE_REPORT.md`,
+  120-case sample, open-weight model via Groq, zero extra Bedrock cost)
+  found HIPAA and FDA — the two domains that looked *strongest*
+  structurally — were the *weakest* under real semantic review: only
+  30%/46% of their answers were substantively correct, despite near-
+  perfect citation accuracy. Two root causes found: chunking truncation
+  (a decisive sentence silently cut out of the single best-scoring
+  120-word chunk), and `planner_node`'s fixed, one-size-fits-all intent-
+  description padding skewing FDA retrieval toward "signature"
+  vocabulary regardless of the actual sub-topic asked (confirmed: a
+  direct "audit trail" question never surfaces `21 CFR 11.10`, the
+  section that actually covers it). A first fix attempt (full-section-text
+  evidence + a stricter anti-hallucination prompt) was built, confirmed to
+  close the two hand-diagnosed cases, but measured against a 32-case
+  before/after re-judge to not generalize (40.6% → 37.5%, noise-level,
+  trading one failure mode for another) — reverted rather than kept for an
+  unproven benefit. Two narrower, separately-targeted fixes landed
+  instead: `planner_node` now skips the intent-description padding
+  entirely for `fda_e_records` and `hipaa_privacy_security` (the issue's
+  own proposed next step — see `NO_PAD_INTENTS` in `src/agents.py`), and
+  `_chunk_text` in `src/retriever.py` now packs whole sentences into
+  ~120-word windows instead of slicing by raw word count, so a chunk can
+  no longer cut a sentence in half. After rebuilding `data/embeddings.npz`
+  against the new chunking and re-running the same 50-case pilot sample
+  (fixed seed, so it's the same cases before/after): HIPAA went from the
+  30% baseline to **80%** correct, FDA from 46% to **57%** — real,
+  measured improvement, but on a small sample judged by a different Groq
+  model (`openai/gpt-oss-120b`, after the original `gpt-oss-20b` hit its
+  daily token quota mid-run) than the original 120-case report, so this
+  is directional evidence, not a like-for-like confirmation of the full
+  report.
+  **The FDA number did not move, and the exact hand-diagnosed issue
+  example is still wrong** — not because of the mid-sentence truncation
+  the chunking fix targeted, but a narrower, previously-unnoticed sibling
+  of it: `Retriever.search()` returned only each section's single
+  best-scoring chunk, and for "does our system need signature validation
+  for device history records," the chunk that scored highest against
+  that query was `21 CFR 11.100`'s clause (c) (signature certification),
+  not clause (b) (identity verification before signature assignment).
+  **A third, bounded fix was added for this**: `search()` now also merges
+  in the immediately preceding/following same-section chunk's text (at
+  most 2 extra ~120-word chunks per hit, regardless of section length —
+  deliberately not "give the whole section," which is unbounded for a
+  5,000+-word section and was already tried combined with a stricter
+  prompt and reverted). Confirmed directly against the rebuilt index:
+  clause (b) is now present in the evidence passed to the LLM for this
+  exact query. **But the generated answer still doesn't use it** — the
+  LLM's answer still reasons only from clauses (a)/(c) and concludes no
+  validation is needed, ignoring the identity-verification clause it was
+  given. So this specific example's root cause has moved one layer
+  further: not retrieval missing the evidence (fixed, verified), but the
+  summarizer not using evidence it has. The aggregate judge numbers on
+  this run (FDA 57%, HIPAA 60%) didn't clearly separate from the prior
+  run's (FDA 57%, HIPAA 80%); `BedrockSummarizer` runs at
+  `temperature=0.2` (`src/bedrock_llm.py`), so answers vary run-to-run
+  even with identical evidence, and a 50-case sample can't distinguish
+  that noise from a real regression here.
+  **A fourth, narrow fix was then tried on the generation side**: one
+  added sentence in `SYSTEM_PROMPT` (`src/llm_prompts.py`) telling the
+  model every clause in every excerpt matters, not just the first or most
+  prominent one — deliberately not the broad "stricter anti-hallucination
+  prompt" combination already tried and reverted for over-hedging.
+  Checked directly, twice: the regenerated answer for the exact issue
+  example now explicitly states the identity-verification requirement
+  from clause (b) that it ignored before — a real, inspectable content
+  improvement. But re-judged, that same answer was still marked incorrect
+  both times, for a different stated reason each time, and the aggregate
+  numbers (FDA 57%, HIPAA 60%, overall 68%) stayed statistically
+  indistinguishable from the pre-prompt-change run. Taken together, this
+  looks like **judge-level noise** on borderline cases (a correct-but-
+  imperfectly-phrased answer, re-graded inconsistently), not evidence the
+  prompt change helped or hurt — a 50-case sample judged once can't tell
+  the difference. No sign of the prior attempt's specific regression
+  (over-hedging dragging previously-correct answers down), at least.
+  **A controlled re-run was then done to actually settle this**: the full
+  set of FDA + HIPAA cases (360 of the 1,416, not a random cross-domain
+  slice that dilutes them), with `BedrockSummarizer` forced to
+  `temperature=0` (new `--temperature` flag on `eval/run_eval.py`) to
+  remove the run-to-run generation noise above. The structural eval ran
+  clean (360/360, 95%/100% domain-correct). The judge pass hit Groq's
+  daily token quota on the `gpt-oss-120b` judge partway through — but
+  because `run_judge.py` judges a fixed random shuffle of case IDs (not
+  grouped by domain), the 148 cases it got through before the quota cut
+  it off are still an **unbiased** subsample, not a skewed one: **FDA
+  60/84 = 71.4%**, **HIPAA 46/64 = 71.9%**, both clearly above the
+  issue's original 46%/30% baseline, on a sample over 10x larger than any
+  prior check in this history and with the generation-noise variable
+  removed.
+  **The remaining 212 cases were then filled in with a second judge
+  provider** — `eval/llm_judge.py` now also has `BedrockJudge` (and
+  `run_judge.py --provider bedrock --retry-unparsed` to judge only the
+  cases a prior run left unparsed, without re-spending calls on ones
+  already judged). Claude models were tried first for the best
+  independence from `BedrockSummarizer`'s Nova Micro generator, but this
+  account's Bedrock access to them fails with `AccessDeniedException` /
+  `INVALID_PAYMENT_INSTRUMENT` (an AWS Marketplace subscription gap, not
+  a code issue) — fell back to `amazon.nova-lite-v1:0`, a different model
+  *tier* than Nova Micro but the same provider/family, which is weaker
+  independence than a different provider would give (a model judging a
+  sibling model's output is closer to self-evaluation than an external
+  check). With all 360 cases now judged (0 unparseable): **FDA 138/180 =
+  76.7%**, **HIPAA 142/180 = 78.9%**. The two sub-samples are at least
+  directionally consistent with each other — the independent-judge-only
+  subset (Groq, 148 cases) scored 71.4%/71.9%, the full blended set
+  scored a bit higher at 76.7%/78.9% — rather than contradicting each
+  other, which is reassuring, but the full number should be read knowing
+  part of it came from a less independent judge. Both numbers clear the
+  issue's original 46%/30% baseline by a wide margin either way. This is
+  still not the original 120-case report's exact methodology (different
+  judge model(s), different question set), so call this strong,
+  multi-angle directional evidence that the combined fixes (padding,
+  chunking, neighbor-expansion, prompt) measurably improved FDA/HIPAA
+  answer correctness — not a byte-for-byte reproduction of the original
+  finding, and not grounds to close the issue without someone deciding
+  that bar has been met. See the issue, `eval/JUDGE_REPORT.md`, and the
+  `run-evaluation-suite` skill before extending this further.
 - **(Fixed, previously a real bug found via the UI)** "Tell me the format
   of SAR" used to misclassify as `sox_internal_controls` at ~15%
   confidence — not a tie-breaker between plausible options, but
@@ -296,6 +450,23 @@ CLAUDE.md               project guide for Claude Code
   query 3 Bedrock calls instead of 2, not just a tuning change. Left
   open and documented, not silently patched around; see
   `edit-compliance-graph`'s "known rough edge" section.
+- **Chunking is sentence-boundary-aware, not truly semantic.** The fix
+  above packs whole sentences into ~120-word windows (never splitting a
+  sentence across a chunk boundary), which closes the specific truncation
+  bug it targeted. It does not do real semantic/topic-boundary chunking —
+  i.e. it doesn't look at *where the meaning changes* within a section and
+  split there; it only respects grammatical sentence boundaries while
+  still packing by a fixed word-count target. A true semantic chunker
+  (e.g. embedding each sentence and splitting where embedding similarity
+  between consecutive sentences drops) was considered and deliberately
+  not built here: it would add a real embedding call per sentence at
+  index-build time purely to find boundaries, on top of the one call per
+  chunk already made to embed the chunk itself — a real cost/complexity
+  increase disproportionate to this demo's scale, where most sections are
+  already short (1-5 chunks). If retrieval quality on long, multi-topic
+  sections (e.g. HIPAA's 102 sections) turns out to still be a problem
+  after this fix, semantic chunking is the next thing to try — see
+  `bedrock-rag-retrieval` before attempting it.
 - **`app_ui.py` has no automated test coverage** — the pytest suite's
   "every new feature gets tests" rule doesn't extend to Streamlit
   rendering itself; verification is manual (see `edit-compliance-ui`
