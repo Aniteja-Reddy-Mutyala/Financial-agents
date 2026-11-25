@@ -22,16 +22,21 @@ the agent:
    chunked sections (precomputed offline; see Stack below).
 4. **Verifies grounding** — a Compliance Verifier agent checks retrieval
    confidence before allowing an answer to ship. A **LangGraph conditional
-   edge** routes ungrounded queries to a human-escalation node instead of
-   letting an LLM guess.
+   edge** routes an ungrounded query to an escalation node instead of
+   letting the grounded-answer step guess.
 5. **Summarizes** — calls **Amazon Bedrock (Nova Micro)** via
    **langchain_aws**, the cheapest Amazon text model, to draft a cited
    answer from the verified regulatory text. Falls back to a templated
    draft if Bedrock is unreachable.
 
-A greeting or "tell me about yourself"-style message (e.g. *"hi"*) skips
-steps 2-4 entirely and gets a short, warm conversational reply instead —
-see `classifier.py::is_chitchat` and `agents.py::chitchat_node`.
+A query that doesn't ground — a greeting like *"hi"*, or a real-sounding
+compliance question we just don't have regulatory evidence for — still
+gets an LLM-generated reply, not a canned message: the escalation node
+calls the same LLM with no retrieved evidence at all, so it can decide
+the right tone (warm for a greeting, an honest "I don't have grounded
+evidence for that" otherwise) without ever being able to cite a
+hallucinated regulation — there's structurally nothing for it to cite.
+See `agents.py::escalate_node` and `llm_prompts.py::UNGROUNDED_SYSTEM_PROMPT`.
 
 ## Example queries
 

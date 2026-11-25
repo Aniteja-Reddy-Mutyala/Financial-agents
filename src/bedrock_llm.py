@@ -16,7 +16,12 @@ import os
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
-from llm_prompts import CHITCHAT_SYSTEM_PROMPT, SYSTEM_PROMPT, build_chitchat_user_message, build_user_message
+from llm_prompts import (
+    SYSTEM_PROMPT,
+    UNGROUNDED_SYSTEM_PROMPT,
+    build_ungrounded_user_message,
+    build_user_message,
+)
 
 DEFAULT_MODEL_ID = "amazon.nova-micro-v1:0"
 DEFAULT_REGION = os.environ.get("AWS_REGION", "us-east-1")
@@ -59,13 +64,16 @@ class BedrockSummarizer:
         except Exception as exc:  # noqa: BLE001 - want to degrade gracefully either way
             raise BedrockUnavailable(str(exc)) from exc
 
-    def chitchat(self, query):
-        """A greeting/small-talk reply, bypassing retrieval entirely — see
-        chitchat_node in agents.py and llm_prompts.py's CHITCHAT_SYSTEM_PROMPT."""
-        user_message = build_chitchat_user_message(query)
+    def respond_ungrounded(self, query):
+        """A reply for a query retrieval did NOT ground — see escalate_node
+        in agents.py and llm_prompts.py's UNGROUNDED_SYSTEM_PROMPT. Never
+        passed any retrieved evidence, so it cannot cite a hallucinated
+        regulation no matter what it says — that's enforced by this method
+        simply having none to hand it, not by the prompt's wording alone."""
+        user_message = build_ungrounded_user_message(query)
         try:
             response = self.llm.invoke(
-                [SystemMessage(content=CHITCHAT_SYSTEM_PROMPT), HumanMessage(content=user_message)]
+                [SystemMessage(content=UNGROUNDED_SYSTEM_PROMPT), HumanMessage(content=user_message)]
             )
             return response.content.strip()
         except Exception as exc:  # noqa: BLE001 - want to degrade gracefully either way

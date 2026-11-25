@@ -4,7 +4,7 @@ No network/AWS calls — pure scikit-learn, fast.
 """
 import pytest
 
-from classifier import CHITCHAT_LABEL, IntentClassifier, LABEL_DESCRIPTIONS, is_chitchat
+from classifier import IntentClassifier, LABEL_DESCRIPTIONS
 
 VALID_LABELS = set(LABEL_DESCRIPTIONS.keys())
 
@@ -146,50 +146,3 @@ def test_off_topic_queries_have_no_signal(clf, query):
 def test_clear_cut_queries_have_signal(clf, query, _expected):
     result = clf.predict(query)
     assert result["has_signal"] is True
-
-
-# --- is_chitchat: deterministic greeting/small-talk detection --------------
-#
-# NOT a label on IntentClassifier's model (see classifier.py's CHITCHAT_LABEL
-# comment for the measured regression that caused this to be a separate,
-# deterministic check instead) — these tests exercise is_chitchat() itself
-# and confirm the real classifier's CLEAR_CASES are unaffected by it.
-
-
-@pytest.mark.parametrize(
-    "query",
-    ["Hi", "hi", "Hi!", "hello", "Hello there.", "hey", "tell me about yourself",
-     "Tell me about yourself?", "who are you", "what can you do", "thanks", "thank you", "goodbye",
-     # Phrasing variants not in the exact-match list, caught by the
-     # substring markers instead (real-world bug: "Tell me something
-     # about yourself" fell through to the classifier and escalated).
-     "Tell me something about yourself", "tell me a bit about yourself"],
-)
-def test_is_chitchat_matches_greetings_and_small_talk(query):
-    assert is_chitchat(query) is True
-
-
-@pytest.mark.parametrize(
-    "query,_expected",
-    CLEAR_CASES
-    + [
-        ("Tell me the format of SAR", "sar_filing"),
-        ("what's the best pizza topping in Chicago", None),
-    ],
-)
-def test_is_chitchat_does_not_match_real_or_off_topic_queries(query, _expected):
-    # The specific regression this guards: "Tell me the format of SAR"
-    # shares the word "tell" with a chitchat phrase but must not match —
-    # is_chitchat() is exact-match (after normalization), not substring.
-    assert is_chitchat(query) is False
-
-
-def test_clear_cases_still_classify_correctly_alongside_chitchat_detection(clf):
-    # Regression guard for the actual bug found: adding "chitchat" as a
-    # trained label on IntentClassifier flipped several of these to
-    # "chitchat" purely from the new class's prior, with no real word
-    # overlap. is_chitchat() must stay fully separate from this model.
-    for query, expected in CLEAR_CASES:
-        result = clf.predict(query)
-        assert result["intent"] == expected, f"{query!r} -> {result['intent']}, expected {expected}"
-        assert result["intent"] != CHITCHAT_LABEL

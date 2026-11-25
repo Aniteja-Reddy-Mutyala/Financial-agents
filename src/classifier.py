@@ -33,64 +33,6 @@ TRAIN_EXAMPLES = [
     ("CFO certification requirements for quarterly SEC filings", "sox_internal_controls"),
 ]
 
-# Not a regulatory domain, and deliberately NOT one of IntentClassifier's
-# trained labels — a query that's just a greeting, small talk, or asking
-# about the assistant itself. A first attempt added "chitchat" as a 9th
-# label on the real classifier; measured regression: with only ~3
-# training examples per class already, the new class's intercept/prior
-# was enough to flip several previously-correct real compliance queries
-# (e.g. "Tell me the format of SAR", which shares the token "tell" with
-# one chitchat example) to "chitchat" instead — not from genuine
-# ambiguity, just the fragile model's tiny-sample decision boundaries
-# shifting. See is_chitchat() below for the actual (deterministic,
-# classifier-independent) detection mechanism, and agents.py's
-# route_after_classify/CHITCHAT_LABEL.
-CHITCHAT_LABEL = "chitchat"
-CHITCHAT_DESCRIPTION = (
-    "Casual conversation — a greeting, small talk, or a question about the "
-    "assistant itself, not a regulatory compliance question"
-)
-
-# Deliberately a short, exact-match (after light normalization) phrase
-# list, not a fuzzy/substring check — a substring check on words like
-# "hi" or "help" would false-positive on real compliance text ("this
-# bank" contains "hi"... no it doesn't as a whole word, but overly loose
-# matching is exactly the kind of fragility that broke the classifier-
-# based approach above). Expand this list deliberately, re-running
-# tests/test_classifier.py's real-query regression cases after each
-# addition — see write-compliance-tests.
-_CHITCHAT_PHRASES = {
-    "hi", "hi there", "hello", "hello there", "hey", "hey there",
-    "good morning", "good afternoon", "good evening",
-    "tell me about yourself", "who are you", "what are you",
-    "what can you do", "what do you do", "how can you help", "how can you help me",
-    "thanks", "thank you", "thanks for your help", "thank you for your help",
-    "bye", "goodbye", "see you",
-}
-
-# Substring markers for phrasing the exact-match list above won't catch
-# ("tell me something about yourself", "so who exactly are you") — each
-# one is a distinctive multi-word fragment, not a single common word, so
-# it's very unlikely to appear inside real compliance text by accident
-# (unlike e.g. bare "help" or "you", which would false-positive on real
-# questions and so are deliberately NOT markers here).
-_CHITCHAT_SUBSTRINGS = (
-    "about yourself", "about you", "who are you", "what are you",
-    "what can you do", "what do you do", "how can you help",
-)
-
-
-def is_chitchat(query: str) -> bool:
-    """True if `query` is a greeting/small-talk aside rather than a real
-    compliance question — see CHITCHAT_LABEL above for why this is a
-    separate, deterministic check instead of a label on IntentClassifier.
-    """
-    normalized = query.strip().lower().rstrip("!.?")
-    if normalized in _CHITCHAT_PHRASES:
-        return True
-    return any(marker in normalized for marker in _CHITCHAT_SUBSTRINGS)
-
-
 LABEL_DESCRIPTIONS = {
     "sar_filing": "Suspicious Activity Report (SAR) filing obligations",
     "ctr_filing": "Currency Transaction Report (CTR) filing obligations",

@@ -24,7 +24,12 @@ low and you get an empty response, not a truncated one.
 """
 import os
 
-from llm_prompts import CHITCHAT_SYSTEM_PROMPT, SYSTEM_PROMPT, build_chitchat_user_message, build_user_message
+from llm_prompts import (
+    SYSTEM_PROMPT,
+    UNGROUNDED_SYSTEM_PROMPT,
+    build_ungrounded_user_message,
+    build_user_message,
+)
 
 DEFAULT_MODEL_ID = "openai/gpt-oss-20b"
 
@@ -81,15 +86,18 @@ class GroqSummarizer:
         except Exception as exc:  # noqa: BLE001 - want to degrade gracefully either way
             raise GroqUnavailable(str(exc)) from exc
 
-    def chitchat(self, query):
-        """A greeting/small-talk reply, bypassing retrieval entirely — see
-        chitchat_node in agents.py and llm_prompts.py's CHITCHAT_SYSTEM_PROMPT."""
-        user_message = build_chitchat_user_message(query)
+    def respond_ungrounded(self, query):
+        """A reply for a query retrieval did NOT ground — see escalate_node
+        in agents.py and llm_prompts.py's UNGROUNDED_SYSTEM_PROMPT. Never
+        passed any retrieved evidence, so it cannot cite a hallucinated
+        regulation no matter what it says — that's enforced by this method
+        simply having none to hand it, not by the prompt's wording alone."""
+        user_message = build_ungrounded_user_message(query)
         try:
             response = self.client.chat.completions.create(
                 model=self.model_id,
                 messages=[
-                    {"role": "system", "content": CHITCHAT_SYSTEM_PROMPT},
+                    {"role": "system", "content": UNGROUNDED_SYSTEM_PROMPT},
                     {"role": "user", "content": user_message},
                 ],
                 max_tokens=800,

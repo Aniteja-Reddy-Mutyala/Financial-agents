@@ -134,17 +134,17 @@ def test_summarize_with_empty_evidence_does_not_crash():
     assert result == "No relevant regulation found."
 
 
-def test_chitchat_returns_stripped_model_content():
+def test_respond_ungrounded_returns_stripped_model_content():
     fake = _FakeGroqClient(reply="  Hi! I'm a compliance assistant.  \n")
     summarizer = _summarizer_with_fake_client(fake)
-    result = summarizer.chitchat("hi")
+    result = summarizer.respond_ungrounded("hi")
     assert result == "Hi! I'm a compliance assistant."
 
 
-def test_chitchat_passes_chitchat_system_prompt_not_the_compliance_one():
+def test_respond_ungrounded_passes_ungrounded_system_prompt_not_the_compliance_one():
     fake = _FakeGroqClient()
     summarizer = _summarizer_with_fake_client(fake)
-    summarizer.chitchat("tell me about yourself")
+    summarizer.respond_ungrounded("tell me about yourself")
     messages = fake.chat.completions.received_kwargs["messages"]
     system_msg, user_msg = messages
     assert "conversational front end" in system_msg["content"]
@@ -152,17 +152,17 @@ def test_chitchat_passes_chitchat_system_prompt_not_the_compliance_one():
     assert "tell me about yourself" in user_msg["content"]
 
 
-def test_chitchat_raises_groq_unavailable_on_failure():
+def test_respond_ungrounded_raises_groq_unavailable_on_failure():
     summarizer = _summarizer_with_fake_client(_FailingGroqClient())
     with pytest.raises(GroqUnavailable):
-        summarizer.chitchat("hi")
+        summarizer.respond_ungrounded("hi")
 
 
-def test_chitchat_raises_groq_unavailable_on_empty_content():
+def test_respond_ungrounded_raises_groq_unavailable_on_empty_content():
     fake = _FakeGroqClient(reply="")
     summarizer = _summarizer_with_fake_client(fake)
     with pytest.raises(GroqUnavailable):
-        summarizer.chitchat("hi")
+        summarizer.respond_ungrounded("hi")
 
 
 def test_client_property_raises_groq_unavailable_with_no_api_key(monkeypatch):

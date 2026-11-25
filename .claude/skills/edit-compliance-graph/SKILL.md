@@ -7,29 +7,28 @@ description: Use before changing src/agents.py or the LangGraph pipeline in this
 
 `src/agents.py` builds a `langgraph.graph.StateGraph` over a
 `ComplianceState` TypedDict (`query`, `intent`, `plan`, `evidence`,
-`verification`, `answer`, `trace`). The graph has two conditional edges:
+`verification`, `answer`, `trace`). The graph is linear except for one
+conditional edge:
 
 ```
-classify_intent --[chitchat]--> chitchat -> END
-                \--[else]-----> plan -> retrieve -> verify --[grounded]--> summarize -> END
-                                                            \--[not grounded]--> escalate -> END
+classify_intent -> plan -> retrieve -> verify --[grounded]--> summarize -> END
+                                              \--[not grounded]--> escalate -> END
 ```
 
-- `verify` is the compliance gate: it decides `grounded` from retrieval
-  score against `MIN_SCORE`, and `route_after_verify` sends the state to
-  either `summarize` (calls the LLM) or `escalate` (templated human-handoff
-  message, no LLM call). Never let `summarize` run on ungrounded state —
-  that's the whole point of the verifier agent. `MIN_SCORE` is tuned to
-  whatever similarity metric `retriever.py` currently produces (dense
-  Titan-embedding cosine similarity, not the TF-IDF cosine it used to be)
-  — if you change how `retriever.py` scores things, `MIN_SCORE` almost
-  certainly needs recalibrating too; see `bedrock-rag-retrieval`.
-- `classify_intent` is the other gate: `route_after_classify` sends a
-  greeting/"tell me about yourself"-style message straight to `chitchat`
-  (a short conversational reply, no retrieval, no grounding check) instead
-  of either a fabricated regulatory answer or the "route to a human"
-  escalation message — see "Chitchat: a separate, deterministic bypass"
-  below for why this is NOT a label on `IntentClassifier`'s model.
+`verify` is the compliance gate: it decides `grounded` from retrieval
+score against `MIN_SCORE`, and `route_after_verify` sends the state to
+either `summarize` (an LLM call grounded in retrieved evidence) or
+`escalate` (an LLM call with NO evidence — see "escalate_node: LLM-
+powered, never given evidence" below; it is not the static message it
+used to be). Never let `summarize` run on ungrounded state, and never
+let `escalate_node` receive any retrieved evidence — those are the two
+halves of the whole anti-hallucination design here: the grounded path
+only ever cites what it was given, and the ungrounded path has nothing
+to cite no matter what it says. `MIN_SCORE` is tuned to whatever
+similarity metric `retriever.py` currently produces (dense Titan-
+embedding cosine similarity, not the TF-IDF cosine it used to be) — if
+you change how `retriever.py` scores things, `MIN_SCORE` almost
+certainly needs recalibrating too; see `bedrock-rag-retrieval`.
 
 ## Node function conventions
 
@@ -151,49 +150,57 @@ and a clause-awareness prompt addition (see `bedrock-llm-integration`),
 closed GitHub issue #1 — see README's "Honest limitations" for the full,
 measured before/after.
 
-## Chitchat: a separate, deterministic bypass — NOT a 9th classifier label
+## escalate_node: LLM-powered, never given evidence — and why that's the whole point
 
-A greeting ("Hi") or "tell me about yourself" used to either get
-force-fit into a random regulatory domain (confusing) or, after the
-has_signal fix, correctly fail to ground and get the "route to a human
-compliance officer" escalation message — a strange reply to "hi."
-`chitchat_node` fixes this: a short, warm, conversational reply via the
-same `Summarizer` (a new `.chitchat(query)` method, separate from
-`.summarize()` — see `bedrock-llm-integration`), with retrieval skipped
-entirely.
+A greeting ("Hi") used to either get force-fit into a random regulatory
+domain (confusing) or, after the has_signal fix, correctly fail to
+ground and get a static "route to a human compliance officer" message —
+a strange reply to "hi." `escalate_node` now calls the LLM too (via a
+new `Summarizer.respond_ungrounded(query)` method, separate from
+`.summarize()` — see `bedrock-llm-integration`), using a prompt
+(`llm_prompts.py::UNGROUNDED_SYSTEM_PROMPT`) that lets the model decide
+the tone: warm and conversational for a greeting, or an honest "I don't
+have grounded evidence for that" for a real-sounding but uncovered
+compliance question.
 
-**The first attempt added `"chitchat"` as a 9th trained label on
-`IntentClassifier` and was reverted** — measured regression: with only
-~3 training examples per class already, the new class's intercept was
+**This is deliberately the *only* place a greeting is handled** — there
+is no separate chitchat detector, classifier label, or phrase list
+anywhere. A greeting is not special-cased at all; it just happens not to
+ground (same as any other query that doesn't clear `MIN_SCORE`), and
+`escalate_node` handles every ungrounded query the same way regardless
+of why it's ungrounded.
+
+**Two earlier, narrower attempts were tried and replaced by this one:**
+(1) adding `"chitchat"` as a 9th trained label directly on
+`IntentClassifier` — reverted after a measured regression: with only ~3
+training examples per class already, the new class's intercept was
 enough to flip several previously-correct real compliance queries (e.g.
-"Tell me the format of SAR," which shares the token "tell" with a
-chitchat training example) to "chitchat" purely from the fragile
-model's shifted decision boundary, not genuine ambiguity. If you're
-tempted to add a label to fix a classification problem here, test the
-*existing* `CLEAR_CASES` regression suite in `tests/test_classifier.py`
-afterward — this is exactly the failure mode it's for.
+"Tell me the format of SAR," sharing the token "tell" with a chitchat
+example) purely from the fragile model's shifted decision boundary, not
+genuine ambiguity; (2) a separate, deterministic `is_chitchat(query)`
+phrase/substring check run before the real classifier — this avoided
+regressing the classifier, but needed constant hand-expansion for every
+new phrasing a real user typed ("Hi,there" with no space, "tell me
+something about yourself") and could never cover all of them. Letting
+the LLM itself judge tone — with no evidence to misuse, since
+`escalate_node` never has any — handles arbitrary phrasing without a
+maintained list and without touching the classifier at all. If you're
+tempted to special-case greeting detection again, read this history
+first; the LLM-judgment approach here is the one that actually stopped
+needing patches.
 
-**The actual mechanism**: `classifier.py::is_chitchat(query)` — a small,
-exact-match (after light normalization) phrase list, fully independent
-of `IntentClassifier`'s model. `classify_intent_node` checks it *first*;
-when it matches, the real classifier is never called at all (not called
-and discarded — skipped), and the returned `intent` dict is a synthetic
-`{"intent": CHITCHAT_LABEL, "description": CHITCHAT_DESCRIPTION,
-"confidence": 1.0, "has_signal": True}` so the trace/UI badge never
-shows a mismatched real-domain label next to a chitchat reply.
-`route_after_classify` then just checks `intent["intent"] ==
-CHITCHAT_LABEL`. Expanding `_CHITCHAT_PHRASES` is low-risk (it can't
-destabilize the real classifier, by construction) but re-run
-`tests/test_classifier.py::test_is_chitchat_does_not_match_real_or_off_topic_queries`
-style checks against real compliance phrasing after each addition
-anyway — a phrase that's too loose (e.g. a bare "help" match) could
-still swallow a real question.
+**Why this doesn't reopen the hallucination risk** `summarize()`'s
+prompt has needed real fixes for (see `bedrock-llm-integration`'s
+"Prompting" section and GitHub issue #1): `escalate_node` is only ever
+reached when retrieval did NOT ground the query, and it is never handed
+`state["evidence"]` — not filtered, not summarized, not at all. The
+model has nothing to cite from in this path no matter how it's
+prompted, so there's no instruction for it to ignore or evidence for it
+to misuse. That's a structural guarantee from the code, not a trust
+assumption about the model's behavior.
 
-`chitchat_node` sets `verification = {"grounded": True, "citations":
-[], "reason": "chitchat — not a regulatory question"}` even though no
-retrieval happened — purely so `app_ui.py`/`demo.py`, which read
-`result.verification["grounded"]`/`["citations"]` unconditionally,
-don't need a special case for this path. `grounded=True` (not a new
-third badge state) was a deliberate choice: the UI only has
-green/"grounded" or orange/"escalated," and orange would misleadingly
-suggest something went wrong with a successful chitchat reply.
+`escalate_node`'s static fallback (used only when the LLM call itself
+fails — `SummarizerUnavailable`) is unchanged from before: the templated
+"could not confidently ground this answer... recommend routing to a
+human compliance officer" message, so a provider outage degrades the
+same way it always has rather than showing nothing.

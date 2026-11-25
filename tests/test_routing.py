@@ -9,18 +9,13 @@ import pytest
 from agents import (
     MIN_SCORE,
     NO_PAD_INTENTS,
-    SummarizerUnavailable,
     _unique_evidence,
-    chitchat_node,
-    classify_intent_node,
     escalate_node,
     planner_node,
     retriever_node,
-    route_after_classify,
     route_after_verify,
     verifier_node,
 )
-from classifier import CHITCHAT_DESCRIPTION, CHITCHAT_LABEL
 
 
 def _evidence(source_id, score, title="Some section", text="Some regulatory text."):
@@ -109,17 +104,48 @@ def test_route_to_escalate_when_not_grounded():
     assert route_after_verify(state) == "escalate"
 
 
-# --- escalate_node: the human-handoff branch --------------------------------
+# --- escalate_node: the ungrounded branch (LLM, never given evidence) ------
 
 
-def test_escalate_node_produces_warning_and_no_citations():
+class _FakeEscalateSummarizer:
+    model_id = "fake-test-model"
+
+    def __init__(self, reply="Hi! Ask me about BSA/AML, FDA, HIPAA, or SOX."):
+        self.reply = reply
+        self.calls = []
+
+    def respond_ungrounded(self, query):
+        self.calls.append(query)
+        return self.reply
+
+
+class _FailingEscalateSummarizer:
+    model_id = "fake-test-model"
+
+    def respond_ungrounded(self, query):
+        from bedrock_llm import BedrockUnavailable
+
+        raise BedrockUnavailable("simulated provider outage")
+
+
+def test_escalate_node_returns_llm_reply():
     state = _base_state([])
     state["verification"] = {"grounded": False, "citations": [], "reason": "no evidence"}
-    update = escalate_node(state)
+    fake = _FakeEscalateSummarizer(reply="Hello! Ask me about BSA/AML, FDA, HIPAA, or SOX.")
+    update = escalate_node(state, llm=fake)
+    assert update["answer"] == "Hello! Ask me about BSA/AML, FDA, HIPAA, or SOX."
+    assert fake.calls == ["do we need to file a SAR"]  # the query, nothing else
+    assert any("generated ungrounded reply" in line for line in update["trace"])
+
+
+def test_escalate_node_falls_back_to_static_warning_when_llm_unavailable():
+    state = _base_state([])
+    state["verification"] = {"grounded": False, "citations": [], "reason": "no evidence"}
+    update = escalate_node(state, llm=_FailingEscalateSummarizer())
     assert "⚠️" in update["answer"]
     assert "human compliance officer" in update["answer"]
     assert "Citations:" not in update["answer"]
-    assert any("not grounded" in line for line in update["trace"])
+    assert any("LLM unavailable" in line for line in update["trace"])
 
 
 # --- _unique_evidence: feeds the Summarizer ---------------------------------
@@ -274,82 +300,6 @@ def test_planner_does_not_pad_broad_multi_topic_intents_even_with_signal(intent)
     }
     result = planner_node(state)
     assert result["plan"]["retrieval_query"] == state["query"]
-
-
-# --- route_after_classify / chitchat_node ----------------------------------
-
-
-class _FakeChitchatSummarizer:
-    model_id = "fake-test-model"
-
-    def __init__(self, reply="Hi! I'm a compliance assistant."):
-        self.reply = reply
-        self.calls = []
-
-    def chitchat(self, query):
-        self.calls.append(query)
-        return self.reply
-
-
-class _FailingChitchatSummarizer:
-    model_id = "fake-test-model"
-
-    def chitchat(self, query):
-        from bedrock_llm import BedrockUnavailable
-
-        raise BedrockUnavailable("simulated provider outage")
-
-
-def test_classify_intent_node_sets_chitchat_intent_without_calling_classifier():
-    class _ExplodingClassifier:
-        def predict(self, query):
-            raise AssertionError("real classifier must not be called for a chitchat query")
-
-    state = {"query": "Hi", "trace": []}
-    result = classify_intent_node(state, intent_clf=_ExplodingClassifier())
-    assert result["intent"]["intent"] == CHITCHAT_LABEL
-    assert result["intent"]["description"] == CHITCHAT_DESCRIPTION
-    assert result["intent"]["has_signal"] is True
-
-
-def test_route_after_classify_sends_chitchat_intent_to_chitchat():
-    state = {"intent": {"intent": CHITCHAT_LABEL}}
-    assert route_after_classify(state) == "chitchat"
-
-
-def test_route_after_classify_sends_everything_else_to_plan():
-    state = {"intent": {"intent": "sar_filing"}}
-    assert route_after_classify(state) == "plan"
-
-
-def test_chitchat_node_returns_llm_reply_and_grounded_verification():
-    fake = _FakeChitchatSummarizer(reply="Hello! Ask me about BSA/AML, FDA, HIPAA, or SOX.")
-    state = {
-        "query": "Hi",
-        "intent": {"intent": CHITCHAT_LABEL, "description": CHITCHAT_DESCRIPTION, "confidence": 1.0},
-        "trace": [],
-    }
-    result = chitchat_node(state, llm=fake)
-    assert result["answer"] == "Hello! Ask me about BSA/AML, FDA, HIPAA, or SOX."
-    assert result["verification"] == {
-        "grounded": True,
-        "citations": [],
-        "reason": "chitchat — not a regulatory question",
-    }
-    assert fake.calls == ["Hi"]
-    assert any("generated chitchat reply" in line for line in result["trace"])
-
-
-def test_chitchat_node_falls_back_to_static_reply_when_llm_unavailable():
-    state = {
-        "query": "Hi",
-        "intent": {"intent": CHITCHAT_LABEL, "description": CHITCHAT_DESCRIPTION, "confidence": 1.0},
-        "trace": [],
-    }
-    result = chitchat_node(state, llm=_FailingChitchatSummarizer())
-    assert "compliance assistant" in result["answer"]
-    assert result["verification"]["grounded"] is True
-    assert any("LLM unavailable" in line for line in result["trace"])
 
 
 def test_planner_still_pads_non_broad_intents_with_signal():

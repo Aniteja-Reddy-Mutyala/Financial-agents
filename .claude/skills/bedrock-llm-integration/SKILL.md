@@ -10,21 +10,28 @@ The final-answer Summarizer step is **model-agnostic by design**:
 default) and `src/groq_llm.py::GroqSummarizer` (`openai/gpt-oss-20b` on
 Groq, an open-weight model, no AWS cost for this step) both implement
 the exact same interface — `.model_id`, `.summarize(query,
-intent_description, evidence)` for a grounded compliance answer, and
-`.chitchat(query)` for a greeting/small-talk reply (see `agents.py`'s
-`chitchat_node` and `edit-compliance-graph`'s chitchat section) — both
-raising a typed `*Unavailable` exception on any failure, and both
-import their prompt text from `src/llm_prompts.py` instead of defining
-their own (`SYSTEM_PROMPT`/`build_user_message` for `.summarize()`,
-`CHITCHAT_SYSTEM_PROMPT`/`build_chitchat_user_message` for `.chitchat()`
-— two separate prompts, since `.summarize()`'s prompt is specifically
-about refusing to answer from anything but retrieved excerpts, which is
-wrong for a message that has none). **Never edit a prompt or message
-template in just one of `bedrock_llm.py`/`groq_llm.py`** — they'd
-silently drift into answering the same question differently depending
-on which provider happens to be configured. Change `llm_prompts.py`
-once; both providers pick it up. If you add a third method to this
-interface, add it to both files and to the fakes in
+intent_description, evidence)` for a grounded compliance answer (called
+from `summarizer_node`), and `.respond_ungrounded(query)` for every
+ungrounded query — greetings included — (called from `escalate_node`;
+see `edit-compliance-graph`'s "escalate_node: LLM-powered, never given
+evidence" section for why this single method replaced an earlier
+separate chitchat-detection mechanism) — both raising a typed
+`*Unavailable` exception on any failure, and both import their prompt
+text from `src/llm_prompts.py` instead of defining their own
+(`SYSTEM_PROMPT`/`build_user_message` for `.summarize()`,
+`UNGROUNDED_SYSTEM_PROMPT`/`build_ungrounded_user_message` for
+`.respond_ungrounded()` — two separate prompts, since `.summarize()`'s
+prompt is specifically about refusing to answer from anything but
+retrieved excerpts, which is wrong for a call that's never given any).
+**`.respond_ungrounded()` must never be passed retrieved evidence** —
+that it structurally has none to cite is what makes it safe from
+hallucinated citations, not its prompt wording; don't "improve" it by
+handing it evidence someday. **Never edit a prompt or message template
+in just one of `bedrock_llm.py`/`groq_llm.py`** — they'd silently drift
+into answering the same question differently depending on which
+provider happens to be configured. Change `llm_prompts.py` once; both
+providers pick it up. If you add a third method to this interface, add
+it to both files and to the fakes in
 `tests/test_bedrock_llm.py`/`test_groq_llm.py` and
 `tests/test_agents_integration.py::_FakeSummarizer` — a fake missing a
 method only breaks the one test that happens to exercise that path,
