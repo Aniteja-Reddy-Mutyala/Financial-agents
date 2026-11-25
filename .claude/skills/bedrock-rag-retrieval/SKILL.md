@@ -61,6 +61,57 @@ progress saved, before checkpointing existed). If you do increase
 concurrency, test it on a handful of chunks before committing to a full
 rebuild, and keep the backoff/checkpoint logic regardless.
 
+## Chunking: sentence-boundary-aware, plus bounded neighbor-chunk expansion
+
+`_chunk_text`/`load_chunks` (both in `retriever.py` — `parse_ecfr.py` and
+`build_embeddings.py` do NOT chunk; they parse whole sections and embed
+whatever `load_chunks()` hands them) pack whole sentences into
+`CHUNK_WORDS`-word (120) windows with `CHUNK_OVERLAP`-word (30) overlap
+between consecutive chunks, splitting on `.`/`;`/`:` as sentence
+boundaries. **Not** a raw word-count slice — that was the original
+implementation, and it could cut a chunk off mid-sentence, silently
+dropping whatever came after the cut from the embedded text entirely
+(measured, GitHub issue #1: a chunk for `21 CFR 11.100` cut off right
+after its identity-verification requirement). If you touch `_chunk_text`,
+keep it sentence-aware; don't revert to a raw word slice for simplicity.
+
+Since embedding vectors are cached per chunk (`data/embeddings.npz`),
+**changing `_chunk_text`, `CHUNK_WORDS`, or `CHUNK_OVERLAP` always
+requires rebuilding `data/embeddings.npz`/`embeddings_meta.json`** — same
+real, billed, resumable rebuild as any other `data/kb.json` change (see
+"The precomputed index is a cache that can go stale" above and
+`add-ecfr-regulation`'s rebuild step). The chunk count changes too (120
+→ ~2,048 chunks after the sentence-aware switch, up from ~1,420) —
+expect a different total, not a bug.
+
+**Sentence-aware chunking is deliberately NOT semantic/topic-boundary
+chunking** — it only respects grammatical sentence boundaries while
+still packing by a fixed word-count target; it doesn't look at where the
+*meaning* changes within a section. A true semantic chunker (embed each
+sentence, split where consecutive-sentence similarity drops) was
+considered and not built — it would add a real embedding call per
+*sentence* just to find boundaries, on top of the one call per *chunk*
+already made, a cost/complexity increase judged disproportionate to this
+project's scale. See README's "Honest limitations" before building one.
+
+**Even with no mid-sentence cuts, `Retriever.search()` only returning
+each section's single best-scoring chunk can still omit a decisive
+clause** that lives in a *different*, lower-scoring chunk of the same
+section (measured: for a signature-validation question, `21 CFR
+11.100`'s best-scoring chunk covered clause (c); the identity-
+verification requirement in clause (b) lived in the chunk right before
+it and was never returned). `Retriever._text_with_neighbors(idx)` now
+merges in the immediately preceding/following same-section chunk's text
+whenever available — **bounded to at most 2 extra chunks per hit**
+regardless of how long the section is. This is deliberately not "give
+the whole section" (tried once, combined with a stricter prompt, and
+reverted for not generalizing — and unbounded for a 5,000+-word
+section); it's a small, fixed-size expansion either way, and it costs
+zero extra Bedrock calls (pure retrieval-time text assembly over chunks
+already embedded — not a new embedding or generation call). If you
+change `top_k` dedup logic or chunk ordering, keep this bounded-neighbor
+property; don't let it become proportional to section length.
+
 ## MIN_SCORE in agents.py's verifier_node is metric-dependent — recalibrate it
 
 `verifier_node`'s grounding decision (`MIN_SCORE = 0.08`) was tuned for
@@ -88,9 +139,10 @@ thing.
   `test_bedrock_llm.py`'s pattern exactly.
 - `tests/test_retriever.py` — retrieval **machinery** only (sorting,
   per-section dedup, top_k handling, the empty/whitespace short-circuit
-  that must never call the embedder) against a small synthetic corpus
-  with a `_FakeEmbedder`. Free, no dependency on `data/embeddings.npz`
-  existing.
+  that must never call the embedder, sentence-boundary `_chunk_text`
+  behavior, and the bounded neighbor-chunk expansion) against a small
+  synthetic corpus with a `_FakeEmbedder`. Free, no dependency on
+  `data/embeddings.npz` existing.
 - `tests/test_agents_integration.py` — full-graph plumbing (routing,
   citation passthrough, Bedrock-failure fallback) using a
   `_FixedVectorEmbedder`-backed synthetic retriever that's deterministically

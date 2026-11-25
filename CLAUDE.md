@@ -110,12 +110,23 @@ editing rather than guessing from this summary:
   vocabulary at larger synthetic scale — see why in README.md) are
   documented in README.md's "Honest limitations" section — don't silently
   "fix" or paper over these without updating that section.
-- A real, measured one (not yet fixed — tracked as
-  [GitHub issue #1](https://github.com/Aniteja-Reddy-Mutyala/Financial-agents/issues/1)):
-  citation-domain-correctness (99.9% structurally) does not mean answer
-  correctness — a semantic LLM-judge pass found HIPAA/FDA answers
-  substantively correct only 30%/46% of the time despite citing the
-  right regulation. A fix was tried and reverted because it didn't
-  generalize (see the issue and `eval/JUDGE_REPORT.md` for the full
-  writeup and root causes found so far) — don't re-attempt it the same
-  way without re-running the eval suite to confirm it actually helps.
+- A real, measured one (**fixed and closed** — see
+  [GitHub issue #1](https://github.com/Aniteja-Reddy-Mutyala/Financial-agents/issues/1)
+  for the full history): citation-domain-correctness (99.9%
+  structurally) does not mean answer correctness — a semantic LLM-judge
+  pass found HIPAA/FDA answers substantively correct only 30%/46% of the
+  time despite citing the right regulation. A first fix attempt (full-
+  section-text evidence + a stricter anti-hallucination prompt) was
+  tried and reverted because it didn't generalize. Four narrower,
+  separately-targeted fixes landed instead — `NO_PAD_INTENTS` in
+  `agents.py`, sentence-boundary chunking and bounded neighbor-chunk
+  expansion in `retriever.py`, and a clause-awareness addition to
+  `llm_prompts.py`'s `SYSTEM_PROMPT` — and were confirmed, via a
+  controlled re-run (full FDA+HIPAA case set, deterministic generation,
+  two independent judge providers), to raise FDA to 76.7% and HIPAA to
+  78.9%. See the issue (closed, with the full writeup) and README.md's
+  "Honest limitations" for the complete history, including the known
+  caveats on that measurement (judge independence, residual ~21-23%
+  error rate) — read both before touching this area again, since the
+  residual error rate is a known *ongoing* limitation, not evidence this
+  fix didn't work.

@@ -45,7 +45,10 @@ still makes one real Bedrock call (embed) plus one real Groq call
   Client: `langchain_aws.ChatBedrockConverse`. Region/credentials come
   from the environment (`AWS_REGION`, default `us-east-1`) and the
   standard AWS credential chain (`~/.aws/credentials`) — don't hardcode
-  either.
+  either. `BedrockSummarizer(temperature=...)` defaults to `0.2`; pass
+  `0.0` for deterministic generation when you need a controlled
+  before/after comparison rather than production use (`eval/run_eval.py
+  --temperature 0.0` wires this through — see `run-evaluation-suite`).
 - **Groq**: `openai/gpt-oss-20b`, set in `src/groq_llm.py::DEFAULT_MODEL_ID`
   — this exact model is already proven to work against this project's
   Groq account (it's also `eval/llm_judge.py`'s judge model); several
@@ -100,20 +103,35 @@ If you touch either `summarize()`:
 ## Prompting
 
 `src/llm_prompts.py::SYSTEM_PROMPT` instructs the model to answer only
-from the provided excerpts and cite section numbers. This is **not
-enforced mechanically** for either provider — Bedrock has been observed
-once citing a section not present in the retrieved evidence (likely
-drawn from pretraining). If you're asked to make citations trustworthy,
-that means adding a verification step (e.g. regex-extract cited
-"31 CFR ####.###" patterns from the response and check each one is in
-`state["verification"]["citations"]`) — don't just reword the prompt and
-assume it's fixed; test it against a few queries **on both providers**
-and report what you found either way. See also the FDA/HIPAA
-citation-correct-vs-answer-correct finding tracked in
-[GitHub issue #1](https://github.com/Aniteja-Reddy-Mutyala/Financial-agents/issues/1)
-— a prompt change was already tried for a related problem there and
-found not to generalize; read that history before trying another
-prompt-only fix.
+from the provided excerpts, cite section numbers, and (added for
+[GitHub issue #1](https://github.com/Aniteja-Reddy-Mutyala/Financial-agents/issues/1),
+now closed) read every clause in every excerpt rather than just the
+first or most prominent one — added after measuring the model ignoring
+a later lettered clause (e.g. `(b)` after focusing on `(a)`/`(c)`) even
+when that clause was present in its evidence. None of this is
+**enforced mechanically** for either provider — Bedrock has been
+observed once citing a section not present in the retrieved evidence
+(likely drawn from pretraining), and the clause-awareness addition
+improved the *content* of at least one checked answer but didn't move
+the aggregate judge metric outside noise on a 50-case sample (see the
+issue's full history and README's "Honest limitations" — a *much*
+larger, deterministic-generation re-run was what actually confirmed
+real improvement, not the prompt change judged in isolation). If you're
+asked to make citations trustworthy, that means adding a verification
+step (e.g. regex-extract cited "31 CFR ####.###" patterns from the
+response and check each one is in `state["verification"]["citations"]`)
+— don't just reword the prompt and assume it's fixed; test it against a
+few queries **on both providers** and report what you found either way.
+A fix was already tried and reverted once for not generalizing (full-
+section-text evidence + a stricter anti-hallucination prompt, see the
+issue) — if you try another prompt-only change here, test it narrowly
+(one added instruction, not a broad rewrite) and re-run a controlled
+eval (large sample, `BedrockSummarizer(temperature=0.0)` — see
+`run-evaluation-suite`'s "Controlled re-measurement") before trusting
+any before/after delta; `BedrockSummarizer`'s default `temperature=0.2`
+means a single small-sample run can't distinguish a real effect from
+run-to-run generation noise (measured: the same 5-case slice scored
+60%, 80%, then 60% across three runs with no code change in between).
 
 ## Testing a change
 

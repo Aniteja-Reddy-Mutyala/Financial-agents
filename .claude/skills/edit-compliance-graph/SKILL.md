@@ -112,3 +112,35 @@ If you pick this up, flag the added cost/latency to the user first (every
 grounded query would need a third Bedrock call) — see
 `bedrock-llm-integration`'s cost-awareness rules — and update README's
 "Honest limitations" to match, don't just quietly patch it in.
+
+## Fixed: `NO_PAD_INTENTS` — padding hurts broad, multi-topic intents even when `has_signal` is true
+
+A *different* padding problem from the one above (that one was about a
+*wrong/noise* intent description; this one is about a *correct*
+classification whose description is still too broad to help): a query
+can be correctly, confidently classified into `fda_e_records` or
+`hipaa_privacy_security` and still have its retrieval query degraded by
+padding, because those two intents' single fixed description ("FDA
+electronic records and electronic signature requirements" / "HIPAA
+Privacy and Security Rule requirements...") can't represent every
+sub-topic under it. Measured (GitHub issue #1): padding with the
+FDA description skewed retrieval toward "signature" vocabulary even for
+a direct, correctly-classified "audit trail" question, so `21 CFR 11.10`
+(the section that actually covers audit trails) never made the top
+results. HIPAA (102 sections, much broader) has the same shape of
+problem.
+
+`planner_node` now checks `intent in NO_PAD_INTENTS` *before* the
+`has_signal` check — for `fda_e_records`/`hipaa_privacy_security`, it
+never pads regardless of `has_signal`, and searches the raw query alone
+(same `retriever_node` short-circuit as the `has_signal=False` path
+above, so this also saves a Bedrock call). Don't add a third intent to
+`NO_PAD_INTENTS` just because it has many sections — the two already in
+it were added because padding was *measured* to hurt them, not because
+of section count alone; measure before adding more.
+
+This fix, plus a sentence-boundary chunking fix and a bounded neighbor-
+chunk evidence expansion in `retriever.py` (see `bedrock-rag-retrieval`)
+and a clause-awareness prompt addition (see `bedrock-llm-integration`),
+closed GitHub issue #1 — see README's "Honest limitations" for the full,
+measured before/after.
