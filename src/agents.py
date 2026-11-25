@@ -19,12 +19,13 @@ greeting or an honest "I don't have grounded evidence for that" for a real
 but uncovered compliance question, without ever being able to hallucinate
 a citation (there's structurally nothing for it to cite from).
 """
-import os
 from types import SimpleNamespace
 from typing import List, Optional, TypedDict, Union
 
 from langgraph.graph import END, StateGraph
 
+from agent_common import default_llm as _default_llm
+from agent_common import log_step as _log
 from bedrock_llm import BedrockSummarizer, BedrockUnavailable
 from classifier import IntentClassifier
 from groq_llm import GroqSummarizer, GroqUnavailable
@@ -33,24 +34,10 @@ from retriever import Retriever
 Summarizer = Union[BedrockSummarizer, GroqSummarizer]
 SummarizerUnavailable = (BedrockUnavailable, GroqUnavailable)
 
-def _default_llm() -> Summarizer:
-    """Which Summarizer provider ComplianceAgentGraph builds by default when
-    no `llm=` override is passed — "bedrock" (Amazon Nova Micro, the
-    original default) or "groq" (an open-weight model, no AWS cost for
-    this step), chosen via the LLM_PROVIDER env var. Read fresh on every
-    call, not cached at import time, so switching it between
-    ComplianceAgentGraph() instances in the same process (tests included)
-    actually takes effect. Retrieval/embeddings are unaffected either way:
-    Groq has no embeddings API, so Bedrock Titan embeddings are used
-    regardless of this setting — see bedrock-rag-retrieval and
-    run-evaluation-suite skills.
-    """
-    provider = os.environ.get("LLM_PROVIDER", "bedrock").lower()
-    if provider == "groq":
-        return GroqSummarizer()
-    if provider != "bedrock":
-        raise ValueError(f"Unknown LLM_PROVIDER={provider!r} — expected 'bedrock' or 'groq'")
-    return BedrockSummarizer()
+# _default_llm and _log are re-exported from agent_common.py (shared
+# across every agent in this repo — see that module's docstring and
+# CLAUDE.md's "Target end product") under their original names here so
+# nothing importing from `agents` has to change.
 
 # Intents broad enough to cover several distinct sub-topics under one
 # fixed description — padding the retrieval query with that description
@@ -85,12 +72,6 @@ class ComplianceState(TypedDict, total=False):
     verification: dict
     answer: str
     trace: List[str]
-
-
-def _log(state: ComplianceState, agent: str, note: str) -> List[str]:
-    trace = list(state.get("trace", []))
-    trace.append(f"[{agent}] {note}")
-    return trace
 
 
 def _unique_evidence(state: ComplianceState):

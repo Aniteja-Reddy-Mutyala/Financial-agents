@@ -195,6 +195,40 @@ works; there is no free retrieval mode. The UI is a thin presentation
 layer over the same `ComplianceAgentGraph` the CLI uses; see `app_ui.py`
 and the `edit-compliance-ui` skill before changing it.
 
+## Research Agent
+
+A second, fully independent agent alongside the compliance one above —
+`src/research_agent.py`'s `ResearchAgentGraph`, not a node bolted onto
+`ComplianceAgentGraph`. Given a topic/question and/or an uploaded
+document (PDF or text — a resume, for example), it:
+
+1. Extracts up to **3** concrete, specific things worth researching
+   (skills, technologies, companies, named claims) — via one LLM call
+   when a document is given, or just the query itself as the one topic
+   when it isn't (no extraction call needed in that case).
+2. Searches the open web for each topic via [`ddgs`](https://pypi.org/project/ddgs/)
+   (the renamed `duckduckgo_search` — free, no API key).
+3. Synthesizes one report, citing the specific URLs it drew from, and
+   explicitly flagging when sources disagree or coverage is thin.
+
+```bash
+python3 research_demo.py "Kubernetes"                              # query only
+python3 research_demo.py --doc resume.pdf                          # document only
+python3 research_demo.py --doc resume.pdf "focus on cloud skills"  # both, chained
+LLM_PROVIDER=groq python3 research_demo.py "..."                   # same Bedrock/Groq toggle as the compliance agent
+```
+
+It also appears as a second page in the Streamlit web UI
+(`pages/1_Research_Agent.py`, auto-discovered — `app_ui.py` itself is
+untouched) with a text input and a file uploader.
+
+Model-agnostic the same way the compliance agent is: both
+`BedrockSummarizer` and `GroqSummarizer` expose a generic
+`.chat(system_prompt, user_message)` method the Research agent calls
+instead of their compliance-specific `.summarize()`/
+`.respond_ungrounded()`. See the `edit-research-agent` skill before
+changing any of this.
+
 ## Testing
 
 ```bash
@@ -221,6 +255,13 @@ and `tests/test_live_bedrock.py` respectively, gated behind
 assertions moved out of the always-on suite when retrieval switched from
 TF-IDF to dense embeddings.
 
+The Research agent is covered the same way (`tests/test_web_search.py`,
+`tests/test_document_parser.py`, `tests/test_research_agent.py`, plus
+`.chat()` tests added to the existing `test_bedrock_llm.py`/
+`test_groq_llm.py`) — but deliberately has **no** live/gated test for a
+real `ddgs` or LLM call in v1; see `edit-research-agent` and "Honest
+limitations" below.
+
 ## Project layout
 
 ```
@@ -236,13 +277,20 @@ src/classifier.py       intent classifier for compliance queries
 src/llm_prompts.py      shared prompt text for the Summarizer step (both providers)
 src/bedrock_llm.py      langchain_aws ChatBedrockConverse client (Nova Micro) — Summarizer provider
 src/groq_llm.py         groq SDK client (openai/gpt-oss-20b) — alternate Summarizer provider
+src/agent_common.py     default_llm()/log_step() helpers shared by every agent (see CLAUDE.md's "Target end product")
 src/agents.py           LangGraph StateGraph: Orchestrator/Planner/Verifier/Summarizer;
                         LLM_PROVIDER env var picks bedrock_llm vs groq_llm
 demo.py                 CLI entry point
 app_ui.py               Streamlit web UI (chat interface over the same agent)
+src/research_agent.py   second, independent LangGraph agent — Research agent (see above)
+src/web_search.py       ddgs (DuckDuckGo) search client for the Research agent
+src/document_parser.py  PDF/text extraction (pypdf) for the Research agent
+src/research_prompts.py shared prompt text for the Research agent's two LLM calls
+research_demo.py        CLI entry point for the Research agent
+pages/1_Research_Agent.py  Streamlit page for the Research agent (auto-discovered)
 tests/                  pytest suite (mocked) + two opt-in live-Bedrock test files
 eval/                   one-off 1,416-case eval suite + Groq LLM-judge — see run-evaluation-suite skill
-requirements.txt        langgraph, langchain-aws, langchain-core, boto3, scikit-learn, numpy, pytest, streamlit
+requirements.txt        langgraph, langchain-aws, langchain-core, boto3, scikit-learn, numpy, pytest, streamlit, ddgs, pypdf
                         (groq is a separate opt-in extra, only if LLM_PROVIDER=groq or using eval/'s judge)
 .env.example            template for GROQ_API_KEY / GITHUB_TOKEN — copy to .env (gitignored), never commit real values
 CLAUDE.md               project guide for Claude Code
@@ -539,3 +587,12 @@ CLAUDE.md               project guide for Claude Code
   coverage here is deliberately narrow and would need more sections
   (e.g. whistleblower protection, auditor independence) for broader
   SOX questions.
+- **Research agent answers are only as good as an open web search's top
+  results** — `ddgs` results are not fact-checked, not peer-reviewed, and
+  can be outdated or promotional; the synthesis prompt is instructed to
+  flag disagreement and thin coverage and cite sources, but (same caveat
+  as the compliance agent's citation-correctness history above) a
+  citation existing doesn't guarantee the summarized claim is accurate.
+  No live/gated test exists yet for the real `ddgs` + LLM path — a
+  deliberate v1 scope cut (see `edit-research-agent`), not silently
+  skipped.

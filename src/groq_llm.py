@@ -28,6 +28,9 @@ effort. A visible-but-truncated answer (non-empty content,
 `finish_reason="length"`) is the same underlying failure as an empty one
 and is treated the same way: raised as GroqUnavailable rather than
 silently returned mid-sentence.
+
+Also used (via the generic .chat() method below) by the separate
+Research agent (research_agent.py) — see research_prompts.py.
 """
 import os
 
@@ -116,6 +119,41 @@ class GroqSummarizer:
                 model=self.model_id,
                 messages=[
                     {"role": "system", "content": UNGROUNDED_SYSTEM_PROMPT},
+                    {"role": "user", "content": user_message},
+                ],
+                max_tokens=1200,
+                temperature=self.temperature,
+                reasoning_effort="low",
+            )
+            choice = response.choices[0]
+            content = choice.message.content
+            if not content or not content.strip():
+                raise GroqUnavailable(
+                    f"{self.model_id} returned empty content (likely exhausted "
+                    "max_tokens on internal reasoning before any visible output)"
+                )
+            if choice.finish_reason == "length":
+                raise GroqUnavailable(
+                    f"{self.model_id} hit max_tokens before finishing the answer "
+                    "(finish_reason='length') — treating as unavailable rather "
+                    "than returning a truncated answer"
+                )
+            return content.strip()
+        except GroqUnavailable:
+            raise
+        except Exception as exc:  # noqa: BLE001 - want to degrade gracefully either way
+            raise GroqUnavailable(str(exc)) from exc
+
+    def chat(self, system_prompt, user_message):
+        """Generic LLM call for callers outside the compliance prompt
+        contract (currently: the Research agent, research_prompts.py) —
+        caller supplies both prompts directly. Same empty-content /
+        finish_reason="length" guard as .summarize()."""
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model_id,
+                messages=[
+                    {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_message},
                 ],
                 max_tokens=1200,

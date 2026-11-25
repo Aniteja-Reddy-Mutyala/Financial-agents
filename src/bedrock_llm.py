@@ -11,6 +11,13 @@ One of two interchangeable Summarizer providers — see groq_llm.py for the
 other, and agents.py's ComplianceAgentGraph for how a provider is chosen.
 Both share the exact same prompt text (llm_prompts.py) so switching
 providers changes cost/latency/model quality, not what's being asked.
+
+Also used (via the generic .chat() method below) by the separate
+Research agent (research_agent.py) — see research_prompts.py. .chat()
+is deliberately generic (caller supplies both prompts) rather than
+compliance-specific like .summarize()/.respond_ungrounded(), so it can
+be shared across agents without either one depending on the other's
+prompt file.
 """
 import os
 
@@ -74,6 +81,19 @@ class BedrockSummarizer:
         try:
             response = self.llm.invoke(
                 [SystemMessage(content=UNGROUNDED_SYSTEM_PROMPT), HumanMessage(content=user_message)]
+            )
+            return response.content.strip()
+        except Exception as exc:  # noqa: BLE001 - want to degrade gracefully either way
+            raise BedrockUnavailable(str(exc)) from exc
+
+    def chat(self, system_prompt, user_message):
+        """Generic LLM call for callers outside the compliance prompt
+        contract (currently: the Research agent) — caller supplies both
+        prompts directly instead of this method building them from
+        llm_prompts.py."""
+        try:
+            response = self.llm.invoke(
+                [SystemMessage(content=system_prompt), HumanMessage(content=user_message)]
             )
             return response.content.strip()
         except Exception as exc:  # noqa: BLE001 - want to degrade gracefully either way

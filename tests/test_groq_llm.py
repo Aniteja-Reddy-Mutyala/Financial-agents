@@ -197,6 +197,44 @@ def test_respond_ungrounded_raises_groq_unavailable_on_truncated_content():
         summarizer.respond_ungrounded("hi")
 
 
+def test_chat_returns_stripped_model_content():
+    fake = _FakeGroqClient(reply="  Kubernetes is a container orchestration system.  \n")
+    summarizer = _summarizer_with_fake_client(fake)
+    result = summarizer.chat("system prompt", "user message")
+    assert result == "Kubernetes is a container orchestration system."
+
+
+def test_chat_passes_the_given_prompts_not_the_compliance_ones():
+    fake = _FakeGroqClient()
+    summarizer = _summarizer_with_fake_client(fake)
+    summarizer.chat("Research assistant system prompt", "Research this topic: Kubernetes")
+    kwargs = fake.chat.completions.received_kwargs
+    assert kwargs["reasoning_effort"] == "low"
+    system_msg, user_msg = kwargs["messages"]
+    assert system_msg["content"] == "Research assistant system prompt"
+    assert user_msg["content"] == "Research this topic: Kubernetes"
+
+
+def test_chat_raises_groq_unavailable_on_failure():
+    summarizer = _summarizer_with_fake_client(_FailingGroqClient())
+    with pytest.raises(GroqUnavailable):
+        summarizer.chat("system prompt", "user message")
+
+
+def test_chat_raises_groq_unavailable_on_empty_content():
+    fake = _FakeGroqClient(reply="")
+    summarizer = _summarizer_with_fake_client(fake)
+    with pytest.raises(GroqUnavailable):
+        summarizer.chat("system prompt", "user message")
+
+
+def test_chat_raises_groq_unavailable_on_truncated_content():
+    fake = _FakeGroqClient(reply="Kubernetes is a", finish_reason="length")
+    summarizer = _summarizer_with_fake_client(fake)
+    with pytest.raises(GroqUnavailable):
+        summarizer.chat("system prompt", "user message")
+
+
 def test_client_property_raises_groq_unavailable_with_no_api_key(monkeypatch):
     monkeypatch.delenv("GROQ_API_KEY", raising=False)
     summarizer = GroqSummarizer(api_key=None)
