@@ -194,6 +194,9 @@ editing rather than guessing from this summary:
   `src/web_search.py`, `src/document_parser.py`, or
   `src/research_prompts.py` (the Research agent's graph, nodes, and
   prompts — independent from `edit-compliance-graph`).
+- **`run-ui`** — whenever asked to start/launch/open/preview the
+  Streamlit UI (either page) — just launch it via `preview_start`, don't
+  ask first.
 - Before touching `src/agent_common.py` (the `default_llm()`/
   `log_step()` helpers shared by every agent): both `agents.py` and
   `research_agent.py` re-export these under their own `_default_llm`/
