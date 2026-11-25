@@ -8,6 +8,7 @@ import pytest
 
 from agents import (
     MIN_SCORE,
+    NO_PAD_INTENTS,
     _unique_evidence,
     escalate_node,
     planner_node,
@@ -247,3 +248,36 @@ def test_planner_does_not_pad_query_when_classifier_has_no_signal():
     }
     result = planner_node(state)
     assert result["plan"]["retrieval_query"] == state["query"]
+
+
+# --- planner_node: NO_PAD_INTENTS override has_signal for broad intents ---
+
+
+@pytest.mark.parametrize("intent", sorted(NO_PAD_INTENTS))
+def test_planner_does_not_pad_broad_multi_topic_intents_even_with_signal(intent):
+    # GitHub issue #1: fda_e_records's and hipaa_privacy_security's single
+    # fixed description can't represent all of their sub-topics, so padding
+    # with it skewed retrieval toward whichever sub-topic the description's
+    # wording favors (e.g. signatures) even for a real, on-topic, clearly
+    # classified question about a different sub-topic (e.g. audit trails).
+    # has_signal=True here proves the override applies regardless of
+    # classifier confidence/signal, not just as a special case of it.
+    state = {
+        "query": "does our electronic record system need an audit trail",
+        "intent": {"intent": intent, "description": "some broad description", "has_signal": True},
+        "trace": [],
+    }
+    result = planner_node(state)
+    assert result["plan"]["retrieval_query"] == state["query"]
+
+
+def test_planner_still_pads_non_broad_intents_with_signal():
+    # Regression guard: the NO_PAD_INTENTS override must not swallow the
+    # normal padding path for every other intent.
+    state = {
+        "query": "do we need to file a SAR",
+        "intent": {"intent": "sar_filing", "description": "SAR filing obligations", "has_signal": True},
+        "trace": [],
+    }
+    result = planner_node(state)
+    assert result["plan"]["retrieval_query"] == "do we need to file a SAR SAR filing obligations"

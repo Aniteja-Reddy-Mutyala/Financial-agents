@@ -241,7 +241,7 @@ CLAUDE.md               project guide for Claude Code
 
 ## Honest limitations (vs. the real project)
 
-- **(Open — tracked as [GitHub issue #1](https://github.com/Aniteja-Reddy-Mutyala/Financial-agents/issues/1), not yet fixed)**
+- **(Partially fixed — tracked as [GitHub issue #1](https://github.com/Aniteja-Reddy-Mutyala/Financial-agents/issues/1))**
   Citation-domain-correctness (99.9% in `eval/REPORT.md`'s 1,415-case
   structural eval) does not mean the generated answer is actually
   correct. A separate semantic LLM-judge pass (`eval/JUDGE_REPORT.md`,
@@ -255,14 +255,111 @@ CLAUDE.md               project guide for Claude Code
   description padding skewing FDA retrieval toward "signature"
   vocabulary regardless of the actual sub-topic asked (confirmed: a
   direct "audit trail" question never surfaces `21 CFR 11.10`, the
-  section that actually covers it). A fix (full-section-text evidence +
-  a stricter anti-hallucination prompt) was built, confirmed to close
-  the two hand-diagnosed cases, but measured against a 32-case before/
-  after re-judge to not generalize (40.6% → 37.5%, noise-level, trading
-  one failure mode for another) — reverted rather than kept for an
-  unproven benefit. See the issue and `eval/JUDGE_REPORT.md` for the
-  full writeup, and the `run-evaluation-suite` skill before re-attempting
-  a fix here.
+  section that actually covers it). A first fix attempt (full-section-text
+  evidence + a stricter anti-hallucination prompt) was built, confirmed to
+  close the two hand-diagnosed cases, but measured against a 32-case
+  before/after re-judge to not generalize (40.6% → 37.5%, noise-level,
+  trading one failure mode for another) — reverted rather than kept for an
+  unproven benefit. Two narrower, separately-targeted fixes landed
+  instead: `planner_node` now skips the intent-description padding
+  entirely for `fda_e_records` and `hipaa_privacy_security` (the issue's
+  own proposed next step — see `NO_PAD_INTENTS` in `src/agents.py`), and
+  `_chunk_text` in `src/retriever.py` now packs whole sentences into
+  ~120-word windows instead of slicing by raw word count, so a chunk can
+  no longer cut a sentence in half. After rebuilding `data/embeddings.npz`
+  against the new chunking and re-running the same 50-case pilot sample
+  (fixed seed, so it's the same cases before/after): HIPAA went from the
+  30% baseline to **80%** correct, FDA from 46% to **57%** — real,
+  measured improvement, but on a small sample judged by a different Groq
+  model (`openai/gpt-oss-120b`, after the original `gpt-oss-20b` hit its
+  daily token quota mid-run) than the original 120-case report, so this
+  is directional evidence, not a like-for-like confirmation of the full
+  report.
+  **The FDA number did not move, and the exact hand-diagnosed issue
+  example is still wrong** — not because of the mid-sentence truncation
+  the chunking fix targeted, but a narrower, previously-unnoticed sibling
+  of it: `Retriever.search()` returned only each section's single
+  best-scoring chunk, and for "does our system need signature validation
+  for device history records," the chunk that scored highest against
+  that query was `21 CFR 11.100`'s clause (c) (signature certification),
+  not clause (b) (identity verification before signature assignment).
+  **A third, bounded fix was added for this**: `search()` now also merges
+  in the immediately preceding/following same-section chunk's text (at
+  most 2 extra ~120-word chunks per hit, regardless of section length —
+  deliberately not "give the whole section," which is unbounded for a
+  5,000+-word section and was already tried combined with a stricter
+  prompt and reverted). Confirmed directly against the rebuilt index:
+  clause (b) is now present in the evidence passed to the LLM for this
+  exact query. **But the generated answer still doesn't use it** — the
+  LLM's answer still reasons only from clauses (a)/(c) and concludes no
+  validation is needed, ignoring the identity-verification clause it was
+  given. So this specific example's root cause has moved one layer
+  further: not retrieval missing the evidence (fixed, verified), but the
+  summarizer not using evidence it has. The aggregate judge numbers on
+  this run (FDA 57%, HIPAA 60%) didn't clearly separate from the prior
+  run's (FDA 57%, HIPAA 80%); `BedrockSummarizer` runs at
+  `temperature=0.2` (`src/bedrock_llm.py`), so answers vary run-to-run
+  even with identical evidence, and a 50-case sample can't distinguish
+  that noise from a real regression here.
+  **A fourth, narrow fix was then tried on the generation side**: one
+  added sentence in `SYSTEM_PROMPT` (`src/llm_prompts.py`) telling the
+  model every clause in every excerpt matters, not just the first or most
+  prominent one — deliberately not the broad "stricter anti-hallucination
+  prompt" combination already tried and reverted for over-hedging.
+  Checked directly, twice: the regenerated answer for the exact issue
+  example now explicitly states the identity-verification requirement
+  from clause (b) that it ignored before — a real, inspectable content
+  improvement. But re-judged, that same answer was still marked incorrect
+  both times, for a different stated reason each time, and the aggregate
+  numbers (FDA 57%, HIPAA 60%, overall 68%) stayed statistically
+  indistinguishable from the pre-prompt-change run. Taken together, this
+  looks like **judge-level noise** on borderline cases (a correct-but-
+  imperfectly-phrased answer, re-graded inconsistently), not evidence the
+  prompt change helped or hurt — a 50-case sample judged once can't tell
+  the difference. No sign of the prior attempt's specific regression
+  (over-hedging dragging previously-correct answers down), at least.
+  **A controlled re-run was then done to actually settle this**: the full
+  set of FDA + HIPAA cases (360 of the 1,416, not a random cross-domain
+  slice that dilutes them), with `BedrockSummarizer` forced to
+  `temperature=0` (new `--temperature` flag on `eval/run_eval.py`) to
+  remove the run-to-run generation noise above. The structural eval ran
+  clean (360/360, 95%/100% domain-correct). The judge pass hit Groq's
+  daily token quota on the `gpt-oss-120b` judge partway through — but
+  because `run_judge.py` judges a fixed random shuffle of case IDs (not
+  grouped by domain), the 148 cases it got through before the quota cut
+  it off are still an **unbiased** subsample, not a skewed one: **FDA
+  60/84 = 71.4%**, **HIPAA 46/64 = 71.9%**, both clearly above the
+  issue's original 46%/30% baseline, on a sample over 10x larger than any
+  prior check in this history and with the generation-noise variable
+  removed.
+  **The remaining 212 cases were then filled in with a second judge
+  provider** — `eval/llm_judge.py` now also has `BedrockJudge` (and
+  `run_judge.py --provider bedrock --retry-unparsed` to judge only the
+  cases a prior run left unparsed, without re-spending calls on ones
+  already judged). Claude models were tried first for the best
+  independence from `BedrockSummarizer`'s Nova Micro generator, but this
+  account's Bedrock access to them fails with `AccessDeniedException` /
+  `INVALID_PAYMENT_INSTRUMENT` (an AWS Marketplace subscription gap, not
+  a code issue) — fell back to `amazon.nova-lite-v1:0`, a different model
+  *tier* than Nova Micro but the same provider/family, which is weaker
+  independence than a different provider would give (a model judging a
+  sibling model's output is closer to self-evaluation than an external
+  check). With all 360 cases now judged (0 unparseable): **FDA 138/180 =
+  76.7%**, **HIPAA 142/180 = 78.9%**. The two sub-samples are at least
+  directionally consistent with each other — the independent-judge-only
+  subset (Groq, 148 cases) scored 71.4%/71.9%, the full blended set
+  scored a bit higher at 76.7%/78.9% — rather than contradicting each
+  other, which is reassuring, but the full number should be read knowing
+  part of it came from a less independent judge. Both numbers clear the
+  issue's original 46%/30% baseline by a wide margin either way. This is
+  still not the original 120-case report's exact methodology (different
+  judge model(s), different question set), so call this strong,
+  multi-angle directional evidence that the combined fixes (padding,
+  chunking, neighbor-expansion, prompt) measurably improved FDA/HIPAA
+  answer correctness — not a byte-for-byte reproduction of the original
+  finding, and not grounds to close the issue without someone deciding
+  that bar has been met. See the issue, `eval/JUDGE_REPORT.md`, and the
+  `run-evaluation-suite` skill before extending this further.
 - **(Fixed, previously a real bug found via the UI)** "Tell me the format
   of SAR" used to misclassify as `sox_internal_controls` at ~15%
   confidence — not a tie-breaker between plausible options, but
@@ -344,6 +441,23 @@ CLAUDE.md               project guide for Claude Code
   query 3 Bedrock calls instead of 2, not just a tuning change. Left
   open and documented, not silently patched around; see
   `edit-compliance-graph`'s "known rough edge" section.
+- **Chunking is sentence-boundary-aware, not truly semantic.** The fix
+  above packs whole sentences into ~120-word windows (never splitting a
+  sentence across a chunk boundary), which closes the specific truncation
+  bug it targeted. It does not do real semantic/topic-boundary chunking —
+  i.e. it doesn't look at *where the meaning changes* within a section and
+  split there; it only respects grammatical sentence boundaries while
+  still packing by a fixed word-count target. A true semantic chunker
+  (e.g. embedding each sentence and splitting where embedding similarity
+  between consecutive sentences drops) was considered and deliberately
+  not built here: it would add a real embedding call per sentence at
+  index-build time purely to find boundaries, on top of the one call per
+  chunk already made to embed the chunk itself — a real cost/complexity
+  increase disproportionate to this demo's scale, where most sections are
+  already short (1-5 chunks). If retrieval quality on long, multi-topic
+  sections (e.g. HIPAA's 102 sections) turns out to still be a problem
+  after this fix, semantic chunking is the next thing to try — see
+  `bedrock-rag-retrieval` before attempting it.
 - **`app_ui.py` has no automated test coverage** — the pytest suite's
   "every new feature gets tests" rule doesn't extend to Streamlit
   rendering itself; verification is manual (see `edit-compliance-ui`

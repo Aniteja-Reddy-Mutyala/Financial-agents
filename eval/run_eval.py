@@ -107,10 +107,12 @@ def _load_checkpoint():
     return {}
 
 
-def run(sample=None):
+def run(sample=None, intents=None, temperature=None):
     from agents import ComplianceAgentGraph
 
     dataset = json.loads(DATASET_PATH.read_text())
+    if intents:
+        dataset = [c for c in dataset if c["expected_intent"] in intents]
     if sample:
         random.seed(20261124)
         dataset = random.sample(dataset, min(sample, len(dataset)))
@@ -122,7 +124,18 @@ def run(sample=None):
         print(f"Resuming from checkpoint: {len(done)}/{len(dataset)} cases already run.")
     remaining = [c for c in dataset if c["case_id"] not in done]
 
-    agent = ComplianceAgentGraph()  # real retriever + real Bedrock LLM, built once, shared
+    if temperature is not None:
+        # Forces deterministic generation for a controlled before/after
+        # comparison — BedrockSummarizer's default (0.2) means re-running
+        # this script against identical retrieved evidence can still
+        # produce different answer text each time, which makes a single
+        # run's accuracy numbers unreliable for judging whether a retrieval
+        # or prompt change actually helped. See GitHub issue #1 history.
+        from bedrock_llm import BedrockSummarizer
+
+        agent = ComplianceAgentGraph(llm=BedrockSummarizer(temperature=temperature))
+    else:
+        agent = ComplianceAgentGraph()  # real retriever + real Bedrock LLM, built once, shared
     t0 = time.time()
     completed_since_checkpoint = 0
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
@@ -193,10 +206,29 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--sample", type=int, default=None, help="Run only N random cases (pilot run)")
     parser.add_argument("--estimate-only", action="store_true", help="Print cost/time estimate and exit")
+    parser.add_argument(
+        "--intents",
+        default=None,
+        help="Comma-separated expected_intent values to restrict the run to "
+        "(e.g. fda_e_records,hipaa_privacy_security), so a controlled "
+        "comparison isn't diluted by the other 6 intents.",
+    )
+    parser.add_argument(
+        "--temperature",
+        type=float,
+        default=None,
+        help="Override BedrockSummarizer's temperature (default 0.2) for this "
+        "run — pass 0.0 for deterministic generation in a controlled "
+        "before/after comparison.",
+    )
     args = parser.parse_args()
+    intents = set(args.intents.split(",")) if args.intents else None
 
     if args.estimate_only:
-        n = args.sample or len(json.loads(DATASET_PATH.read_text()))
+        dataset = json.loads(DATASET_PATH.read_text())
+        if intents:
+            dataset = [c for c in dataset if c["expected_intent"] in intents]
+        n = args.sample or len(dataset)
         estimate(n)
     else:
-        run(sample=args.sample)
+        run(sample=args.sample, intents=intents, temperature=args.temperature)

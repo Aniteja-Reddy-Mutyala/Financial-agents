@@ -47,6 +47,19 @@ def _default_llm() -> Summarizer:
         raise ValueError(f"Unknown LLM_PROVIDER={provider!r} — expected 'bedrock' or 'groq'")
     return BedrockSummarizer()
 
+# Intents broad enough to cover several distinct sub-topics under one
+# fixed description — padding the retrieval query with that description
+# skews retrieval toward whichever sub-topic the description's wording
+# happens to lexically/semantically favor, regardless of what the user
+# actually asked. Measured (GitHub issue #1): fda_e_records's description
+# ("FDA electronic records and electronic signature requirements") kept
+# pulling in signature-focused sections even for a direct "audit trail"
+# question, so 21 CFR 11.10 (the section that actually covers audit
+# trails) never made the top 5 — the LLM then answered confidently from
+# the wrong evidence. hipaa_privacy_security (102 sections) has the same
+# shape of problem, likely worse. See planner_node.
+NO_PAD_INTENTS = {"fda_e_records", "hipaa_privacy_security"}
+
 # Tuned for dense Bedrock Titan-embedding cosine similarity, NOT the old
 # TF-IDF cosine scale (was 0.08). Measured against the real built index:
 # genuinely relevant queries scored 0.37-0.70 top-hit; genuinely off-topic
@@ -99,7 +112,13 @@ def classify_intent_node(state: ComplianceState, *, intent_clf: IntentClassifier
 def planner_node(state: ComplianceState) -> dict:
     intent = state["intent"]["intent"]
     top_k = 4 if intent == "aml_program" else 3
-    if state["intent"]["has_signal"]:
+    if intent in NO_PAD_INTENTS:
+        # This intent's one fixed description can't represent all of its
+        # sub-topics well (see NO_PAD_INTENTS above) — pad with nothing
+        # and let the raw query alone drive retrieval, same as the
+        # has_signal=False path below.
+        query = state["query"]
+    elif state["intent"]["has_signal"]:
         query = f"{state['query']} {state['intent']['description']}"
     else:
         # The classifier shared zero training vocabulary with this query —

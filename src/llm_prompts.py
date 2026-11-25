@@ -12,7 +12,12 @@ SYSTEM_PROMPT = (
     "Be concise and precise, cite the exact section numbers given in the "
     "excerpts (e.g. 31 CFR 1020.320, 45 CFR 164.502), and never state an "
     "obligation that isn't supported by the excerpts. If the excerpts don't "
-    "fully answer the question, say what's missing."
+    "fully answer the question, say what's missing. Each excerpt may contain "
+    "more than one numbered or lettered clause (e.g. (a), (b), (c)) — read "
+    "every clause in every excerpt before answering; a requirement in a "
+    "later clause (e.g. identity verification in clause (b)) is just as "
+    "binding as one in an earlier or more prominent clause, and skipping it "
+    "produces a wrong answer even when the citation is correct."
 )
 
 

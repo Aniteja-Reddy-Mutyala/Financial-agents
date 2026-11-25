@@ -24,17 +24,40 @@ JUDGE_RESULTS_PATH = HERE / "judge_results.json"
 SEED = 20261124
 
 
-def run(sample_size):
-    from llm_judge import GroqJudge, GroqJudgeUnavailable
+def _build_judge(provider, model_id):
+    from llm_judge import (
+        DEFAULT_BEDROCK_MODEL,
+        DEFAULT_MODEL,
+        BedrockJudge,
+        BedrockJudgeUnavailable,
+        GroqJudge,
+        GroqJudgeUnavailable,
+    )
 
+    if provider == "bedrock":
+        return BedrockJudge(model_id=model_id or DEFAULT_BEDROCK_MODEL), BedrockJudgeUnavailable
+    return GroqJudge(model_id=model_id or DEFAULT_MODEL), GroqJudgeUnavailable
+
+
+def run(sample_size, model_id=None, provider="groq", retry_unparsed=False):
     results = {r["case_id"]: r for r in json.loads(RESULTS_PATH.read_text()) if "error" not in r}
     dataset = {c["case_id"]: c for c in json.loads(DATASET_PATH.read_text())}
 
-    random.seed(SEED)
-    case_ids = random.sample(list(results.keys()), min(sample_size, len(results)))
+    existing_by_id = {}
+    if retry_unparsed:
+        # Only (re-)judge the cases a prior run left as judge_correct=None
+        # (e.g. Groq's daily quota cutting a run off mid-way) — keep every
+        # already-parsed verdict as-is instead of re-spending calls on it.
+        existing = json.loads(JUDGE_RESULTS_PATH.read_text()) if JUDGE_RESULTS_PATH.exists() else []
+        existing_by_id = {j["case_id"]: j for j in existing}
+        case_ids = [cid for cid, j in existing_by_id.items() if j["judge_correct"] is None]
+        print(f"Retrying {len(case_ids)} previously-unparsed cases out of {len(existing_by_id)} total.")
+    else:
+        random.seed(SEED)
+        case_ids = random.sample(list(results.keys()), min(sample_size, len(results)))
 
-    judge = GroqJudge()
-    judged = []
+    judge, judge_unavailable = _build_judge(provider, model_id)
+    judged_by_id = dict(existing_by_id)
     t0 = time.time()
     for i, case_id in enumerate(case_ids, 1):
         r = results[case_id]
@@ -46,22 +69,21 @@ def run(sample_size):
                 expected_citation_prefix=c["expected_citation_prefix"],
                 expected_keywords=c["expected_keywords"],
             )
-        except GroqJudgeUnavailable as exc:
+        except judge_unavailable as exc:
             verdict = {"correct": None, "reasoning": f"judge call failed: {exc}"}
-        judged.append(
-            {
-                "case_id": case_id,
-                "query": r["query"],
-                "expected_intent": r["expected_intent"],
-                "actual_intent": r["actual_intent"],
-                "citation_domain_correct": r["citation_domain_correct"],
-                "judge_correct": verdict["correct"],
-                "judge_reasoning": verdict["reasoning"],
-            }
-        )
+        judged_by_id[case_id] = {
+            "case_id": case_id,
+            "query": r["query"],
+            "expected_intent": r["expected_intent"],
+            "actual_intent": r["actual_intent"],
+            "citation_domain_correct": r["citation_domain_correct"],
+            "judge_correct": verdict["correct"],
+            "judge_reasoning": verdict["reasoning"],
+        }
         if i % 20 == 0 or i == len(case_ids):
             print(f"  {i}/{len(case_ids)} judged ({time.time() - t0:.0f}s elapsed)")
 
+    judged = list(judged_by_id.values())
     JUDGE_RESULTS_PATH.write_text(json.dumps(judged, indent=2))
     print(f"\nWrote {len(judged)} judge verdicts to {JUDGE_RESULTS_PATH}")
     print_comparison(judged)
@@ -103,5 +125,29 @@ def print_comparison(judged):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--sample", type=int, default=120)
+    parser.add_argument(
+        "--model",
+        default=None,
+        help="Model id to use as judge (default depends on --provider). For "
+        "Groq, switching models works around that model's own daily token "
+        "quota; for Bedrock, pick any text model this account has access to.",
+    )
+    parser.add_argument(
+        "--provider",
+        choices=["groq", "bedrock"],
+        default="groq",
+        help="Which judge to use. 'bedrock' avoids Groq's daily quota "
+        "entirely (a separate, billed resource) — see llm_judge.py's "
+        "module docstring for why its default model differs from the "
+        "Bedrock model that generates the answers being judged.",
+    )
+    parser.add_argument(
+        "--retry-unparsed",
+        action="store_true",
+        help="Only (re-)judge cases eval/judge_results.json left as "
+        "judge_correct=None (e.g. a prior Groq run cut off by its daily "
+        "quota), keeping every already-parsed verdict unchanged. Ignores "
+        "--sample.",
+    )
     args = parser.parse_args()
-    run(args.sample)
+    run(args.sample, model_id=args.model, provider=args.provider, retry_unparsed=args.retry_unparsed)
