@@ -16,29 +16,23 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 import streamlit as st  # noqa: E402
 
 from agents import ComplianceAgentGraph  # noqa: E402
-from bedrock_llm import BedrockUnavailable  # noqa: E402
 from classifier import LABEL_DESCRIPTIONS  # noqa: E402
+from groq_llm import GroqSummarizer  # noqa: E402
 
 st.set_page_config(page_title="Compliance Agent", page_icon="⚖️", layout="centered")
 
 
-class _OfflineSummarizer:
-    """Drop-in for BedrockSummarizer that always raises BedrockUnavailable.
-
-    Lets the UI's "skip Bedrock" toggle reuse summarizer_node's existing,
-    tested template fallback instead of adding a second answer-generation
-    code path just for the UI.
-    """
-
-    model_id = "offline-template-only"
-
-    def summarize(self, **kwargs):
-        raise BedrockUnavailable("offline mode selected in UI")
-
-
 @st.cache_resource(show_spinner="Loading knowledge base and models…")
 def _load_agent(use_bedrock: bool) -> ComplianceAgentGraph:
-    llm = None if use_bedrock else _OfflineSummarizer()
+    # Off = GroqSummarizer, not a fully offline/template-only stub — same
+    # interchangeable-provider design as LLM_PROVIDER elsewhere in this
+    # project (see bedrock-llm-integration skill). If GROQ_API_KEY isn't
+    # set (nothing auto-loads .env — source it before `streamlit run`),
+    # GroqSummarizer.summarize() raises GroqUnavailable on first use,
+    # which summarizer_node already catches and falls back to the
+    # templated draft, so a missing key degrades gracefully rather than
+    # crashing the app.
+    llm = None if use_bedrock else GroqSummarizer()
     return ComplianceAgentGraph(llm=llm)
 
 
@@ -74,16 +68,23 @@ with st.sidebar:
             "Retrieval always makes one real, billed Bedrock embedding call "
             "per question, on or off (that's how dense-embedding search "
             "works — see bedrock-rag-retrieval skill). This toggle only "
-            "controls the summarization step: On = also makes a real Nova "
-            "Micro call to generate the answer. Off = skip that one and use "
-            "the same template fallback the pipeline uses on a real Bedrock "
-            "outage, saving the (larger of the two, still small) LLM call."
+            "controls the summarization step: On = Amazon Nova Micro "
+            "generates the answer (real, billed AWS call). Off = Groq's "
+            "open-weight model generates it instead (needs GROQ_API_KEY — "
+            "see .env.example; nothing auto-loads it, source it before "
+            "running `streamlit run`). If that key is missing or the Groq "
+            "call fails, it falls back to the same templated draft the "
+            "pipeline uses on any provider outage, so this never crashes."
         ),
     )
     if use_bedrock:
         st.caption("⚠️ Each question makes 2 real, billed AWS calls (embed + summarize).")
     else:
-        st.caption("⚠️ Each question still makes 1 real, billed AWS call (embed only).")
+        st.caption(
+            "⚠️ Each question makes 1 real, billed AWS call (embed) plus 1 "
+            "Groq call (summarize) — see the help tooltip if GROQ_API_KEY "
+            "isn't set."
+        )
 
     st.divider()
     st.header("Regulatory domains")
