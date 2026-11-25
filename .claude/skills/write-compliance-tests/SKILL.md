@@ -18,7 +18,8 @@ description: Use before adding or updating any test in this repo, and whenever a
 | `tests/test_document_parser.py` | `parse_document` (the Research agent's PDF/text extraction) — real `pypdf` against small in-test-built fixtures (not a network boundary, so no fake needed), unsupported extension / corrupt-file / empty-text failure modes, `MAX_EXTRACTED_CHARS` truncation. |
 | `tests/test_research_agent.py` | The whole `ResearchAgentGraph`'s **plumbing** — mirrors `test_agents_integration.py`'s approach (fake `.chat()`-capable summarizer, fake web searcher, `ResearchAgentGraph(llm=..., web_searcher=..., document_parser=...)` overrides): intake routing, the `MAX_TOPICS` cap, per-topic search-failure isolation, the all-empty-results template fallback vs. the different LLM-failure template fallback, document-parse-failure degrading to query-only. Also owns its own copy of the `_default_llm`/`LLM_PROVIDER` coverage (same reasoning as `test_agents_integration.py`'s row above — one owning test file per *module*'s usage, even though the implementation is shared). |
 | `tests/test_live_bedrock.py` | The one real, billed Bedrock LLM call — skipped unless `RUN_LIVE_BEDROCK_TESTS=1`. Don't add more tests here; add exactly one assertion to the existing test if you must. |
-| `tests/test_live_rag.py` | Real domain-relevance checks (does "CTR threshold" really find 31 CFR 1010.311 in the real KB) against the real `Retriever.build()` — also skipped unless `RUN_LIVE_BEDROCK_TESTS=1`, since every search is a real, billed embedding call. This is the only place relevance assertions belong now; see `bedrock-rag-retrieval`. The Research agent's real `ddgs`/`.chat()` path has **no equivalent live test** — a deliberate scope cut, not an oversight; see `edit-research-agent`. |
+| `tests/test_live_rag.py` | Real domain-relevance checks (does "CTR threshold" really find 31 CFR 1010.311 in the real KB) against the real `Retriever.build()` — also skipped unless `RUN_LIVE_BEDROCK_TESTS=1`, since every search is a real, billed embedding call. This is the only place relevance assertions belong now; see `bedrock-rag-retrieval`. |
+| `tests/test_live_research.py` | The Research agent's real `ddgs` call and a real end-to-end `.handle()` call (Bedrock or Groq, per `LLM_PROVIDER`) — skipped unless `RUN_LIVE_RESEARCH_TESTS=1` (its own gate, separate from `RUN_LIVE_BEDROCK_TESTS` — see `edit-research-agent`). Confirms the pipeline runs end-to-end for real, not that any given answer's claims are accurate. |
 
 Before writing a new test, check whether an existing parametrized list
 (`CLEAR_CASES`, `AMBIGUOUS_QUERIES`, the edge-case queries in
@@ -81,7 +82,12 @@ regex, a new data shape) that the existing edge-case tests wouldn't catch.
 - A test that needs a real, billed Bedrock call (LLM or embedding) belongs
   only in `test_live_bedrock.py` or `test_live_rag.py`, gated exactly like
   their existing skip condition (`os.environ.get("RUN_LIVE_BEDROCK_TESTS")
-  != "1"`). Never add a third, ungated live-AWS test file.
+  != "1"`). Never add a third Bedrock test file under that same gate, and
+  never add an ungated one. A *different* live-network boundary (e.g.
+  `test_live_research.py`'s real `ddgs` + LLM calls for the Research
+  agent) gets its **own** gate (`RUN_LIVE_RESEARCH_TESTS`) instead of
+  reusing `RUN_LIVE_BEDROCK_TESTS` — different failure modes should stay
+  isolatable, not whether a file exists at all.
 
 ## xfail policy
 

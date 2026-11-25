@@ -234,6 +234,7 @@ changing any of this.
 ```bash
 python3 -m pytest                 # fully mocked — no AWS calls, no cost
 RUN_LIVE_BEDROCK_TESTS=1 python3 -m pytest tests/test_live_bedrock.py tests/test_live_rag.py -v   # real, billed Bedrock calls
+RUN_LIVE_RESEARCH_TESTS=1 python3 -m pytest tests/test_live_research.py -v   # real ddgs + real LLM (Bedrock or Groq per LLM_PROVIDER)
 ```
 
 Covers: intent classification (clear-cut, ambiguous, and edge-case inputs —
@@ -258,9 +259,11 @@ TF-IDF to dense embeddings.
 The Research agent is covered the same way (`tests/test_web_search.py`,
 `tests/test_document_parser.py`, `tests/test_research_agent.py`, plus
 `.chat()` tests added to the existing `test_bedrock_llm.py`/
-`test_groq_llm.py`) — but deliberately has **no** live/gated test for a
-real `ddgs` or LLM call in v1; see `edit-research-agent` and "Honest
-limitations" below.
+`test_groq_llm.py`), plus its own real-call equivalent of
+`test_live_rag.py`/`test_live_bedrock.py`: `tests/test_live_research.py`,
+gated behind its own `RUN_LIVE_RESEARCH_TESTS` env var (deliberately
+separate — a `ddgs` outage and a Bedrock/Groq outage are different
+failure modes worth isolating). See `edit-research-agent`.
 
 ## Project layout
 
@@ -288,7 +291,8 @@ src/document_parser.py  PDF/text extraction (pypdf) for the Research agent
 src/research_prompts.py shared prompt text for the Research agent's two LLM calls
 research_demo.py        CLI entry point for the Research agent
 pages/1_Research_Agent.py  Streamlit page for the Research agent (auto-discovered)
-tests/                  pytest suite (mocked) + two opt-in live-Bedrock test files
+tests/                  pytest suite (mocked) + three opt-in live-call test files
+                        (two for Bedrock, one for the Research agent's ddgs+LLM path)
 eval/                   one-off 1,416-case eval suite + Groq LLM-judge — see run-evaluation-suite skill
 requirements.txt        langgraph, langchain-aws, langchain-core, boto3, scikit-learn, numpy, pytest, streamlit, ddgs, pypdf
                         (groq is a separate opt-in extra, only if LLM_PROVIDER=groq or using eval/'s judge)
@@ -593,6 +597,7 @@ CLAUDE.md               project guide for Claude Code
   flag disagreement and thin coverage and cite sources, but (same caveat
   as the compliance agent's citation-correctness history above) a
   citation existing doesn't guarantee the summarized claim is accurate.
-  No live/gated test exists yet for the real `ddgs` + LLM path — a
-  deliberate v1 scope cut (see `edit-research-agent`), not silently
-  skipped.
+  `tests/test_live_research.py` (gated behind `RUN_LIVE_RESEARCH_TESTS=1`)
+  confirms the real `ddgs` + LLM path still works end-to-end, but it
+  cannot and does not verify that a given answer's claims are correct —
+  only that the pipeline ran and produced something.

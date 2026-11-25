@@ -175,7 +175,7 @@ test via `python3 src/research_agent.py` (one hardcoded query-only run)
 with a real `--doc` too since the document path exercises more of the
 graph than the query-only shortcut does.
 
-## Test coverage — and the one deliberate gap
+## Test coverage
 
 `tests/test_web_search.py`, `tests/test_document_parser.py`, and
 `tests/test_research_agent.py` cover this agent (see
@@ -184,13 +184,14 @@ is tested alongside `.summarize()`/`.respond_ungrounded()` in the
 existing `tests/test_bedrock_llm.py`/`tests/test_groq_llm.py`, not a new
 file, since it's a method on classes those files already own.
 
-**No live/gated test exists for a real `ddgs` call or a real `.chat()`
-call in this agent's end-to-end path** — a deliberate v1 scope cut, not
-an oversight (see README's "Honest limitations"). This project's
-existing rule is "never add a third ungated live-AWS test file"
-(`test_live_bedrock.py`/`test_live_rag.py` are the only two); the same
-reasoning extends to a new live-network boundary. If you want this
-covered later, gate it behind its own env var (e.g.
-`RUN_LIVE_RESEARCH_TESTS=1`) rather than overloading
-`RUN_LIVE_BEDROCK_TESTS` — a `ddgs` outage and a Bedrock outage are
-different failure modes worth being able to isolate.
+`tests/test_live_research.py` covers the real `ddgs` call and a real
+end-to-end `.handle()` call (Bedrock or Groq, per `LLM_PROVIDER`) —
+gated behind its own `RUN_LIVE_RESEARCH_TESTS=1` env var, deliberately
+**not** folded into `RUN_LIVE_BEDROCK_TESTS`: a `ddgs` outage and a
+Bedrock/Groq outage are different failure modes worth being able to
+isolate. This mirrors `test_live_bedrock.py`/`test_live_rag.py`'s role
+for the compliance agent — confirms the real pipeline still runs
+end-to-end, not that any given answer's claims are correct (that's a
+different, harder problem; see README's "Honest limitations"). A third
+agent's live-network test should get its own env var too, not share
+either existing gate.

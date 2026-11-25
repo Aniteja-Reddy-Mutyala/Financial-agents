@@ -104,6 +104,7 @@ LLM_PROVIDER=groq python3 research_demo.py "..."   # same provider toggle as the
 
 python3 -m pytest                            # full test suite — no AWS calls, no cost
 RUN_LIVE_BEDROCK_TESTS=1 python3 -m pytest tests/test_live_bedrock.py tests/test_live_rag.py -v   # real, billed Bedrock calls
+RUN_LIVE_RESEARCH_TESTS=1 python3 -m pytest tests/test_live_research.py -v   # real ddgs + real LLM (Bedrock or Groq per LLM_PROVIDER)
 
 # One-off quality eval (not part of pytest) — see run-evaluation-suite skill
 python3 eval/run_eval.py --estimate-only     # cost/time estimate before committing
@@ -126,12 +127,18 @@ assuming it's already there or re-running it casually.
 
 `tests/` covers the intent classifier, retriever machinery, routing/
 verifier logic, and both LLM clients (Bedrock and Groq) + the embeddings
-client — all mocked except `test_live_bedrock.py` and `test_live_rag.py`,
-both skipped by default (both make real, billed Bedrock calls — LLM and
-embeddings respectively). Keep new tests free of real network calls
-unless they're explicitly gated the same way. Load
-**`write-compliance-tests`** before adding tests — it has the coverage
-pattern, mocking conventions, and where each kind of test belongs.
+client — all mocked except `test_live_bedrock.py`, `test_live_rag.py`,
+and `test_live_research.py`, all skipped by default (real external
+calls: Bedrock LLM, Bedrock embeddings, and ddgs+LLM for the Research
+agent, respectively — the Research agent's gate is its own
+`RUN_LIVE_RESEARCH_TESTS` env var, deliberately separate from
+`RUN_LIVE_BEDROCK_TESTS` since a `ddgs` outage and a Bedrock/Groq outage
+are different failure modes). Keep new tests free of real network calls
+unless they're explicitly gated the same way — and gate any new live
+boundary behind its own env var rather than overloading an existing
+one. Load **`write-compliance-tests`** before adding tests — it has the
+coverage pattern, mocking conventions, and where each kind of test
+belongs.
 
 ## Future deployment (planned, not done yet)
 
@@ -222,11 +229,12 @@ editing rather than guessing from this summary:
   rendering has no automated test here (manual verification only —
   see `edit-compliance-ui`), which is itself a documented limitation,
   not license to skip testing anything else it calls into. The Research
-  agent's real `ddgs`/LLM calls are likewise deliberately left without a
-  live/gated test (see `edit-research-agent` and README's "Honest
-  limitations") — don't add a third ungated live-network test file to
-  "fix" this without discussing it first; the project's existing rule
-  against that already covers Bedrock, and the same reasoning applies.
+  agent's real `ddgs`/LLM path is covered by `tests/test_live_research.py`,
+  gated behind its own `RUN_LIVE_RESEARCH_TESTS` env var — deliberately
+  not folded into `RUN_LIVE_BEDROCK_TESTS`, since a `ddgs` outage and a
+  Bedrock/Groq outage are different failure modes worth isolating. Don't
+  fold a future agent's live-network test into either existing gate;
+  give it its own, same reasoning.
 - Known limitations of the demo (unverified LLM citations, four U.S.-only
   regulatory domains with no GDPR/SOC2, retrieval degrading on generic
   vocabulary at larger synthetic scale — see why in README.md) are
