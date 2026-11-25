@@ -66,8 +66,10 @@ def test_summarize_passes_system_and_human_messages():
     assert len(fake.received_messages) == 2
     system_msg, human_msg = fake.received_messages
     assert "regulatory compliance assistant" in system_msg.content
+    assert "conversational" in system_msg.content
     assert "do we need to file a SAR?" in human_msg.content
     assert "31 CFR 1020.320" in human_msg.content
+    assert "conversational" in human_msg.content
 
 
 def test_summarize_raises_bedrock_unavailable_on_failure():

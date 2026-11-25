@@ -74,7 +74,13 @@ with st.sidebar:
             "see .env.example; nothing auto-loads it, source it before "
             "running `streamlit run`). If that key is missing or the Groq "
             "call fails, it falls back to the same templated draft the "
-            "pipeline uses on any provider outage, so this never crashes."
+            "pipeline uses on any provider outage, so this never crashes. "
+            "Groq's model (gpt-oss-20b) is a reasoning model that spends a "
+            "variable, sometimes large, share of its token budget on hidden "
+            "reasoning before the visible answer — on a longer or multi-part "
+            "question it can occasionally exhaust that budget mid-answer, "
+            "which now also falls back to the templated draft rather than "
+            "showing a cut-off answer. Bedrock has no equivalent limit."
         ),
     )
     if use_bedrock:
@@ -83,7 +89,9 @@ with st.sidebar:
         st.caption(
             "⚠️ Each question makes 1 real, billed AWS call (embed) plus 1 "
             "Groq call (summarize) — see the help tooltip if GROQ_API_KEY "
-            "isn't set."
+            "isn't set. Groq may fall back to a generic answer on longer or "
+            "multi-part questions (reasoning-token budget); Bedrock doesn't "
+            "have this limit."
         )
 
     st.divider()

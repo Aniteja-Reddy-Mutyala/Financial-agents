@@ -17,7 +17,11 @@ SYSTEM_PROMPT = (
     "every clause in every excerpt before answering; a requirement in a "
     "later clause (e.g. identity verification in clause (b)) is just as "
     "binding as one in an earlier or more prominent clause, and skipping it "
-    "produces a wrong answer even when the citation is correct."
+    "produces a wrong answer even when the citation is correct. Write in "
+    "flowing, conversational prose, like a knowledgeable colleague "
+    "explaining it out loud — not a list with one citation stacked per "
+    "line. Weave each section number naturally into the sentence that "
+    "needs it instead of leading every sentence with a citation."
 )
 
 
@@ -30,8 +34,10 @@ def build_user_message(query, intent_description, evidence):
         f"Compliance question: {query}\n"
         f"Detected intent: {intent_description}\n\n"
         f"Regulatory excerpts:\n{excerpt_block}\n\n"
-        "Write a short answer (3-6 sentences) for a compliance analyst, "
-        "citing the specific regulatory sections used (as given above)."
+        "Write a short, conversational answer (3-6 sentences) for a "
+        "compliance analyst, as connected prose rather than a list of "
+        "citations, citing the specific regulatory sections used (as "
+        "given above) naturally within the sentences."
     )
 
 

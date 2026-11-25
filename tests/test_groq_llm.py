@@ -14,33 +14,35 @@ class _FakeMessage:
 
 
 class _FakeChoice:
-    def __init__(self, content):
+    def __init__(self, content, finish_reason="stop"):
         self.message = _FakeMessage(content)
+        self.finish_reason = finish_reason
 
 
 class _FakeResponse:
-    def __init__(self, content):
-        self.choices = [_FakeChoice(content)]
+    def __init__(self, content, finish_reason="stop"):
+        self.choices = [_FakeChoice(content, finish_reason)]
 
 
 class _FakeCompletions:
-    def __init__(self, reply="A fake grounded answer citing 31 CFR 1020.320."):
+    def __init__(self, reply="A fake grounded answer citing 31 CFR 1020.320.", finish_reason="stop"):
         self.reply = reply
+        self.finish_reason = finish_reason
         self.received_kwargs = None
 
     def create(self, **kwargs):
         self.received_kwargs = kwargs
-        return _FakeResponse(self.reply)
+        return _FakeResponse(self.reply, self.finish_reason)
 
 
 class _FakeChat:
-    def __init__(self, reply):
-        self.completions = _FakeCompletions(reply)
+    def __init__(self, reply, finish_reason="stop"):
+        self.completions = _FakeCompletions(reply, finish_reason)
 
 
 class _FakeGroqClient:
-    def __init__(self, reply="A fake grounded answer citing 31 CFR 1020.320."):
-        self.chat = _FakeChat(reply)
+    def __init__(self, reply="A fake grounded answer citing 31 CFR 1020.320.", finish_reason="stop"):
+        self.chat = _FakeChat(reply, finish_reason)
 
 
 class _FailingCompletions:
@@ -89,14 +91,17 @@ def test_summarize_passes_system_and_user_messages():
     )
     kwargs = fake.chat.completions.received_kwargs
     assert kwargs is not None
+    assert kwargs["reasoning_effort"] == "low"
     messages = kwargs["messages"]
     assert len(messages) == 2
     system_msg, user_msg = messages
     assert system_msg["role"] == "system"
     assert "regulatory compliance assistant" in system_msg["content"]
+    assert "conversational" in system_msg["content"]
     assert user_msg["role"] == "user"
     assert "do we need to file a SAR?" in user_msg["content"]
     assert "31 CFR 1020.320" in user_msg["content"]
+    assert "conversational" in user_msg["content"]
 
 
 def test_summarize_raises_groq_unavailable_on_failure():
@@ -116,6 +121,24 @@ def test_summarize_raises_groq_unavailable_on_empty_content():
     # must be treated as a provider failure (triggering the template
     # fallback in agents.py), not returned as a blank "answer".
     fake = _FakeGroqClient(reply="")
+    summarizer = _summarizer_with_fake_client(fake)
+    with pytest.raises(GroqUnavailable):
+        summarizer.summarize(
+            query="do we need to file a SAR?",
+            intent_description="SAR filing obligations",
+            evidence=EVIDENCE,
+        )
+
+
+def test_summarize_raises_groq_unavailable_on_truncated_content():
+    # Regression guard: a non-empty but truncated answer (the model hit
+    # max_tokens mid-sentence, finish_reason="length") is the same
+    # underlying failure as empty content and must not be returned as a
+    # cut-off "answer" — see groq_llm.py's module docstring.
+    fake = _FakeGroqClient(
+        reply="HIPAA requires covered entities to put in place appropriate administrative",
+        finish_reason="length",
+    )
     summarizer = _summarizer_with_fake_client(fake)
     with pytest.raises(GroqUnavailable):
         summarizer.summarize(
@@ -145,7 +168,9 @@ def test_respond_ungrounded_passes_ungrounded_system_prompt_not_the_compliance_o
     fake = _FakeGroqClient()
     summarizer = _summarizer_with_fake_client(fake)
     summarizer.respond_ungrounded("tell me about yourself")
-    messages = fake.chat.completions.received_kwargs["messages"]
+    kwargs = fake.chat.completions.received_kwargs
+    assert kwargs["reasoning_effort"] == "low"
+    messages = kwargs["messages"]
     system_msg, user_msg = messages
     assert "conversational front end" in system_msg["content"]
     assert "Answer ONLY using the provided regulatory excerpts" not in system_msg["content"]
@@ -160,6 +185,13 @@ def test_respond_ungrounded_raises_groq_unavailable_on_failure():
 
 def test_respond_ungrounded_raises_groq_unavailable_on_empty_content():
     fake = _FakeGroqClient(reply="")
+    summarizer = _summarizer_with_fake_client(fake)
+    with pytest.raises(GroqUnavailable):
+        summarizer.respond_ungrounded("hi")
+
+
+def test_respond_ungrounded_raises_groq_unavailable_on_truncated_content():
+    fake = _FakeGroqClient(reply="Hi there, I can help with", finish_reason="length")
     summarizer = _summarizer_with_fake_client(fake)
     with pytest.raises(GroqUnavailable):
         summarizer.respond_ungrounded("hi")

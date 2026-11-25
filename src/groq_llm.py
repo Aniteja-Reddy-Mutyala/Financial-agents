@@ -18,9 +18,16 @@ Cost/latency note: unlike Bedrock Nova Micro (a small, fast, dedicated
 text model), `gpt-oss-20b` is a reasoning model that spends a variable,
 sometimes large, share of its token budget on internal reasoning before
 the visible answer (measured in eval/llm_judge.py: up to 271 of 310
-completion tokens on a single call). max_tokens here is set generously
-for the same reason max_tokens=800 was needed for the judge pass — too
-low and you get an empty response, not a truncated one.
+completion tokens on a single call). `reasoning_effort="low"` is passed
+on every call here to cut down on that hidden token spend directly
+(Groq's API exposes "none"/"low"/"medium"/"high" for this model) rather
+than just buying more max_tokens headroom and hoping — this is the root-
+cause fix; max_tokens=1200 and the finish_reason check below are the
+safety net for whatever hidden-reasoning spend still happens even at low
+effort. A visible-but-truncated answer (non-empty content,
+`finish_reason="length"`) is the same underlying failure as an empty one
+and is treated the same way: raised as GroqUnavailable rather than
+silently returned mid-sentence.
 """
 import os
 
@@ -69,16 +76,27 @@ class GroqSummarizer:
                     {"role": "system", "content": SYSTEM_PROMPT},
                     {"role": "user", "content": user_message},
                 ],
-                max_tokens=800,
+                max_tokens=1200,
                 temperature=self.temperature,
+                reasoning_effort="low",
             )
-            content = response.choices[0].message.content
+            choice = response.choices[0]
+            content = choice.message.content
             if not content or not content.strip():
                 # gpt-oss burned its whole budget on hidden reasoning —
                 # same failure mode documented in eval/llm_judge.py.
                 raise GroqUnavailable(
                     f"{self.model_id} returned empty content (likely exhausted "
                     "max_tokens on internal reasoning before any visible output)"
+                )
+            if choice.finish_reason == "length":
+                # Same failure mode, just with some visible content before
+                # the budget ran out — a sentence cut off mid-word is worse
+                # than a clear fallback, so treat it as unavailable too.
+                raise GroqUnavailable(
+                    f"{self.model_id} hit max_tokens before finishing the answer "
+                    "(finish_reason='length') — treating as unavailable rather "
+                    "than returning a truncated answer"
                 )
             return content.strip()
         except GroqUnavailable:
@@ -100,14 +118,22 @@ class GroqSummarizer:
                     {"role": "system", "content": UNGROUNDED_SYSTEM_PROMPT},
                     {"role": "user", "content": user_message},
                 ],
-                max_tokens=800,
+                max_tokens=1200,
                 temperature=self.temperature,
+                reasoning_effort="low",
             )
-            content = response.choices[0].message.content
+            choice = response.choices[0]
+            content = choice.message.content
             if not content or not content.strip():
                 raise GroqUnavailable(
                     f"{self.model_id} returned empty content (likely exhausted "
                     "max_tokens on internal reasoning before any visible output)"
+                )
+            if choice.finish_reason == "length":
+                raise GroqUnavailable(
+                    f"{self.model_id} hit max_tokens before finishing the answer "
+                    "(finish_reason='length') — treating as unavailable rather "
+                    "than returning a truncated answer"
                 )
             return content.strip()
         except GroqUnavailable:
