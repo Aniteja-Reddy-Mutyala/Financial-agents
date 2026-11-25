@@ -3,6 +3,17 @@ name: edit-compliance-ui
 description: Use before changing app_ui.py, the Streamlit web UI for the compliance agent — layout, the Bedrock/Groq answer-generation toggle, chat history, or anything rendered in the browser. Covers the caching pattern, how the toggle picks the LLM provider, and how to manually test it since it has no automated test coverage.
 ---
 
+## A second agent has its own page — don't fold it in here
+
+`pages/1_Research_Agent.py` is the Research agent's Streamlit page,
+auto-discovered by Streamlit's multipage convention (any `.py` under
+`pages/` next to `app_ui.py`) — it required zero changes to this file,
+and should stay that way. If you're tempted to add Research-agent UI
+logic into `app_ui.py` "since it's already open," don't — see
+`edit-research-agent` instead, and `CLAUDE.md`'s "Target end product"
+for why this repo keeps each agent's UI as its own page rather than
+growing one shared page.
+
 ## It's presentation only — no business logic here
 
 `app_ui.py` is a thin Streamlit front-end over `ComplianceAgentGraph` from

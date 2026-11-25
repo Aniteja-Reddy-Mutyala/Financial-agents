@@ -15,18 +15,96 @@ open-weight model), selected via `LLM_PROVIDER`. See
 [README.md](README.md) for the full architecture and how each piece maps
 back to the original project.
 
+**This is a multi-agent repo**: alongside the compliance agent above,
+`src/research_agent.py` (`ResearchAgentGraph`) is a second, fully
+independent LangGraph agent — given a document (e.g. a resume PDF) and/or
+a topic, it extracts up to 3 concrete things worth researching, searches
+the open web for each (via `ddgs`, free, no API key), and synthesizes a
+report with sources. It shares the `BedrockSummarizer`/`GroqSummarizer`
+classes (via their generic `.chat()` method) and the `LLM_PROVIDER`
+pattern with the compliance agent, but has its own state, nodes, prompts,
+and tests — it is **not** a node bolted onto `ComplianceAgentGraph`. This
+is meant to be the first of several independent agents sharing this
+codebase; see `edit-research-agent` before adding a third.
+
+## Target end product
+
+The user's goal for this repo is to grow it into a small multi-agent
+*ecosystem* matching one specific sentence from the real Northern Trust
+resume this project recreates: *"Designed autonomous LLM agent
+ecosystems (Orchestrator, Verifier, Planner, Email, Calendar, Compliance
+agents) with memory persistence and role-based specialization."*
+Mapping that onto what exists/is planned here:
+
+- **Orchestrator / Verifier / Planner** — not separate top-level agents;
+  these are internal node roles *inside* each domain agent (see
+  `classify_intent_node`/`verifier_node`/`planner_node` in `agents.py`,
+  and the equivalent intake/extract/research nodes in
+  `research_agent.py`). Each new agent gets its own version of this
+  internal role-based specialization, not a shared Orchestrator/Verifier/
+  Planner instance across agents.
+- **Compliance agent** — done (`src/agents.py`).
+- **Research agent** — done (`src/research_agent.py`).
+- **Email agent, Calendar agent** — planned, not built yet. Don't start
+  these without first confirming scope with the user (what they should
+  actually do, real-service vs. local-simulation, per the same kind of
+  design pass `edit-research-agent`/this file's history show for the
+  Research agent) — this file records the *target*, not a green light to
+  build them unprompted.
+- **Memory persistence** — not implemented yet for any agent. Today,
+  each `.handle(...)` call is a single, stateless graph invocation; nothing
+  survives between calls except what the UI's own `st.session_state`
+  chat history re-sends as part of a fresh call. Real persistence (the
+  resume's phrase) means wiring a LangGraph checkpointer (e.g.
+  `MemorySaver` for in-process, or a `Sqlite`/`Postgres` saver for actual
+  cross-run persistence) so an agent's own graph state — not just a UI's
+  chat log — survives across turns of a conversation. Planned, not done;
+  don't add this silently as a side effect of an unrelated change.
+
+**Why this section exists**: so that adding the next agent or
+persistence doesn't require re-deriving this scope from scratch or
+guessing at it — load this section first, then the matching
+`edit-*-agent` skill for whichever piece is actually in scope for the
+current task.
+
+## Extending this codebase with a new agent
+
+`src/agent_common.py` holds what's shared across every agent so a new
+one doesn't need a third/fourth copy of the same ~15 lines:
+`default_llm()` (the `LLM_PROVIDER`-driven Bedrock/Groq selection) and
+`log_step()` (the `_log`-style trace-append helper). A new agent module
+should import both (aliased to `_default_llm`/`_log` for consistency
+with the existing two agents), define its own `TypedDict` state, node
+functions, and `AgentGraph` class following `agents.py`/
+`research_agent.py`'s existing shape (partial-update node returns,
+keyword-only injected dependencies wired via `lambda s: node_fn(s,
+dep=self.x)`, a `.handle(...) -> SimpleNamespace` public method, graph
+built once in `__init__`), add a CLI entry point mirroring
+`demo.py`/`research_demo.py`, and a Streamlit page under `pages/` (auto-
+discovered — no changes needed to `app_ui.py` or any existing page).
+Write a new `.claude/skills/edit-<name>-agent/SKILL.md` mirroring
+`edit-compliance-graph`/`edit-research-agent`'s depth, and add it to the
+skill list below. See `write-compliance-tests` for the test-coverage
+conventions (one owning file per behavior, fake the LLM/network
+boundary, never real calls outside the two gated live-Bedrock files).
+
 ## Running things
 
 ```bash
-python3 -m pip install -r requirements.txt   # langgraph, langchain-aws, boto3, scikit-learn, numpy, pytest, streamlit
+python3 -m pip install -r requirements.txt   # langgraph, langchain-aws, boto3, scikit-learn, numpy, pytest, streamlit, ddgs, pypdf
 python3 src/build_embeddings.py              # one-time: embed data/kb.json -> data/embeddings.npz (real, billed, ~$0.005, resumable)
 python3 demo.py                              # CLI: run sample queries end-to-end (calls Bedrock live)
 python3 demo.py "your question here"         # CLI: ask one question
 LLM_PROVIDER=groq python3 demo.py "..."      # same, but the final answer comes from Groq instead of Bedrock
-streamlit run app_ui.py                      # web UI: chat interface; toggle picks Bedrock or Groq for the final answer (neither is free — retrieval is always a real Bedrock call either way)
+streamlit run app_ui.py                      # web UI: chat interface; toggle picks Bedrock or Groq for the final answer (neither is free — retrieval is always a real Bedrock call either way); the Research agent appears as a second page in the same app (pages/1_Research_Agent.py, auto-discovered by Streamlit — app_ui.py itself is untouched)
+
+python3 research_demo.py "a topic"           # CLI: Research agent, query only
+python3 research_demo.py --doc resume.pdf "focus on cloud skills"   # CLI: Research agent, document + query
+LLM_PROVIDER=groq python3 research_demo.py "..."   # same provider toggle as the compliance agent
 
 python3 -m pytest                            # full test suite — no AWS calls, no cost
 RUN_LIVE_BEDROCK_TESTS=1 python3 -m pytest tests/test_live_bedrock.py tests/test_live_rag.py -v   # real, billed Bedrock calls
+RUN_LIVE_RESEARCH_TESTS=1 python3 -m pytest tests/test_live_research.py -v   # real ddgs + real LLM (Bedrock or Groq per LLM_PROVIDER)
 
 # One-off quality eval (not part of pytest) — see run-evaluation-suite skill
 python3 eval/run_eval.py --estimate-only     # cost/time estimate before committing
@@ -49,12 +127,18 @@ assuming it's already there or re-running it casually.
 
 `tests/` covers the intent classifier, retriever machinery, routing/
 verifier logic, and both LLM clients (Bedrock and Groq) + the embeddings
-client — all mocked except `test_live_bedrock.py` and `test_live_rag.py`,
-both skipped by default (both make real, billed Bedrock calls — LLM and
-embeddings respectively). Keep new tests free of real network calls
-unless they're explicitly gated the same way. Load
-**`write-compliance-tests`** before adding tests — it has the coverage
-pattern, mocking conventions, and where each kind of test belongs.
+client — all mocked except `test_live_bedrock.py`, `test_live_rag.py`,
+and `test_live_research.py`, all skipped by default (real external
+calls: Bedrock LLM, Bedrock embeddings, and ddgs+LLM for the Research
+agent, respectively — the Research agent's gate is its own
+`RUN_LIVE_RESEARCH_TESTS` env var, deliberately separate from
+`RUN_LIVE_BEDROCK_TESTS` since a `ddgs` outage and a Bedrock/Groq outage
+are different failure modes). Keep new tests free of real network calls
+unless they're explicitly gated the same way — and gate any new live
+boundary behind its own env var rather than overloading an existing
+one. Load **`write-compliance-tests`** before adding tests — it has the
+coverage pattern, mocking conventions, and where each kind of test
+belongs.
 
 ## Future deployment (planned, not done yet)
 
@@ -106,6 +190,19 @@ editing rather than guessing from this summary:
 - **`run-evaluation-suite`** — before running, changing, or interpreting
   anything in `eval/` (the templated 1,416-case eval, the Groq LLM-judge
   pass, and the `.env` secrets convention they introduced).
+- **`edit-research-agent`** — before touching `src/research_agent.py`,
+  `src/web_search.py`, `src/document_parser.py`, or
+  `src/research_prompts.py` (the Research agent's graph, nodes, and
+  prompts — independent from `edit-compliance-graph`).
+- **`run-ui`** — whenever asked to start/launch/open/preview the
+  Streamlit UI (either page) — just launch it via `preview_start`, don't
+  ask first.
+- Before touching `src/agent_common.py` (the `default_llm()`/
+  `log_step()` helpers shared by every agent): both `agents.py` and
+  `research_agent.py` re-export these under their own `_default_llm`/
+  `_log` names and both modules' tests assert on that behavior — change
+  it once here, not per-agent, and re-run the full suite, not just one
+  agent's tests.
 
 ## Conventions
 
@@ -134,7 +231,13 @@ editing rather than guessing from this summary:
   follow-up. The one standing exception is `app_ui.py`: Streamlit UI
   rendering has no automated test here (manual verification only —
   see `edit-compliance-ui`), which is itself a documented limitation,
-  not license to skip testing anything else it calls into.
+  not license to skip testing anything else it calls into. The Research
+  agent's real `ddgs`/LLM path is covered by `tests/test_live_research.py`,
+  gated behind its own `RUN_LIVE_RESEARCH_TESTS` env var — deliberately
+  not folded into `RUN_LIVE_BEDROCK_TESTS`, since a `ddgs` outage and a
+  Bedrock/Groq outage are different failure modes worth isolating. Don't
+  fold a future agent's live-network test into either existing gate;
+  give it its own, same reasoning.
 - Known limitations of the demo (unverified LLM citations, four U.S.-only
   regulatory domains with no GDPR/SOC2, retrieval degrading on generic
   vocabulary at larger synthetic scale — see why in README.md) are

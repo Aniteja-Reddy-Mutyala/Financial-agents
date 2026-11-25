@@ -6,3 +6,5 @@ langchain-aws>=1.7
 langchain-core>=1.6
 pytest>=9.0
 streamlit>=1.40
+ddgs>=9.0
+pypdf>=5.0

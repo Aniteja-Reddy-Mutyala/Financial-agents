@@ -117,6 +117,28 @@ def test_respond_ungrounded_raises_bedrock_unavailable_on_failure():
         summarizer.respond_ungrounded("hi")
 
 
+def test_chat_returns_stripped_model_content():
+    fake = _FakeChatModel(reply="  Kubernetes is a container orchestration system.  \n")
+    summarizer = _summarizer_with_fake_llm(fake)
+    result = summarizer.chat("system prompt", "user message")
+    assert result == "Kubernetes is a container orchestration system."
+
+
+def test_chat_passes_the_given_prompts_not_the_compliance_ones():
+    fake = _FakeChatModel()
+    summarizer = _summarizer_with_fake_llm(fake)
+    summarizer.chat("Research assistant system prompt", "Research this topic: Kubernetes")
+    system_msg, human_msg = fake.received_messages
+    assert system_msg.content == "Research assistant system prompt"
+    assert human_msg.content == "Research this topic: Kubernetes"
+
+
+def test_chat_raises_bedrock_unavailable_on_failure():
+    summarizer = _summarizer_with_fake_llm(_FailingChatModel())
+    with pytest.raises(BedrockUnavailable):
+        summarizer.chat("system prompt", "user message")
+
+
 def test_default_model_id_is_cheapest_nova_model():
     # Regression guard: this project is specifically meant to use the
     # cheapest Amazon model. If this ever changes it should be a deliberate
