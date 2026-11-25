@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# OS
+.DS_Store
+
+# Incomplete embedding-build checkpoint (build_embeddings.py deletes this
+# itself on success — if you see it, a previous run didn't finish; never
+# commit a partial one)
+data/.embeddings_checkpoint.json
+
+# Local env / credentials — never commit these if they appear
+.env
+*.pem
