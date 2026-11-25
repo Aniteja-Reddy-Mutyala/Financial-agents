@@ -215,6 +215,28 @@ CLAUDE.md               project guide for Claude Code
 
 ## Honest limitations (vs. the real project)
 
+- **(Open — tracked as [GitHub issue #1](https://github.com/Aniteja-Reddy-Mutyala/Financial-agents/issues/1), not yet fixed)**
+  Citation-domain-correctness (99.9% in `eval/REPORT.md`'s 1,415-case
+  structural eval) does not mean the generated answer is actually
+  correct. A separate semantic LLM-judge pass (`eval/JUDGE_REPORT.md`,
+  120-case sample, open-weight model via Groq, zero extra Bedrock cost)
+  found HIPAA and FDA — the two domains that looked *strongest*
+  structurally — were the *weakest* under real semantic review: only
+  30%/46% of their answers were substantively correct, despite near-
+  perfect citation accuracy. Two root causes found: chunking truncation
+  (a decisive sentence silently cut out of the single best-scoring
+  120-word chunk), and `planner_node`'s fixed, one-size-fits-all intent-
+  description padding skewing FDA retrieval toward "signature"
+  vocabulary regardless of the actual sub-topic asked (confirmed: a
+  direct "audit trail" question never surfaces `21 CFR 11.10`, the
+  section that actually covers it). A fix (full-section-text evidence +
+  a stricter anti-hallucination prompt) was built, confirmed to close
+  the two hand-diagnosed cases, but measured against a 32-case before/
+  after re-judge to not generalize (40.6% → 37.5%, noise-level, trading
+  one failure mode for another) — reverted rather than kept for an
+  unproven benefit. See the issue and `eval/JUDGE_REPORT.md` for the
+  full writeup, and the `run-evaluation-suite` skill before re-attempting
+  a fix here.
 - **(Fixed, previously a real bug found via the UI)** "Tell me the format
   of SAR" used to misclassify as `sox_internal_controls` at ~15%
   confidence — not a tie-breaker between plausible options, but
