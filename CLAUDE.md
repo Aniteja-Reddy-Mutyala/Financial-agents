@@ -50,7 +50,9 @@ Mapping that onto what exists/is planned here:
   actually do, real-service vs. local-simulation, per the same kind of
   design pass `edit-research-agent`/this file's history show for the
   Research agent) — this file records the *target*, not a green light to
-  build them unprompted.
+  build them unprompted. (Calendar agent's scope has since been
+  confirmed — see the entry just below this list once it exists —
+  local-simulation calendar store, scheduling-assistant capability.)
 - **Memory persistence** — not implemented yet for any agent. Today,
   each `.handle(...)` call is a single, stateless graph invocation; nothing
   survives between calls except what the UI's own `st.session_state`
@@ -60,6 +62,38 @@ Mapping that onto what exists/is planned here:
   cross-run persistence) so an agent's own graph state — not just a UI's
   chat log — survives across turns of a conversation. Planned, not done;
   don't add this silently as a side effect of an unrelated change.
+- **Cross-agent integration** — planned, not built. Today Compliance,
+  Research, and (once built) Calendar are fully independent graphs with
+  no shared routing between them — a user's query only ever reaches one
+  agent, whichever page/CLI entry point they used. The end goal is for
+  these agents to work *together* on one incoming query: a **top-level
+  router/dispatcher** that takes one user query, decides which agent(s)
+  it belongs to, calls each relevant agent's existing `.handle(...)`
+  unchanged, and composes a single answer when a query spans more than
+  one agent (e.g. "does this transaction need a SAR filing, and put 30
+  minutes on my calendar with the compliance officer next week" touches
+  both Compliance and Calendar). This matches the project's Northern
+  Trust framing: the user population here is assumed to mostly ask
+  finance/compliance-shaped queries, not generic unrelated requests, so
+  routing between agents is expected to come up in real usage, not be a
+  hypothetical.
+
+  **Naming note**: this router/dispatcher is a *different* thing from
+  each agent's own internal Orchestrator node role (the bullet above,
+  e.g. `classify_intent_node`) even though the resume sentence uses
+  "Orchestrator" for both. The per-agent internal role stays exactly as
+  it is now, scoped to one agent; the router is a new, separate
+  top-level component this file is only recording the intent for.
+
+  Not scoped or started — no dispatcher code, routing logic, or new
+  top-level module exists yet, and this bullet is not a green light to
+  build one unprompted, same rule as every other planned-but-unbuilt
+  item in this section. The concrete requirement this *does* place on
+  every agent built from now on: keep exposing a plain
+  `.handle(...) -> SimpleNamespace(answer=..., trace=...)` entry point
+  (already true of `ComplianceAgentGraph`/`ResearchAgentGraph`) so a
+  future router can call any agent the same way without per-agent
+  special-casing.
 
 **Why this section exists**: so that adding the next agent or
 persistence doesn't require re-deriving this scope from scratch or
