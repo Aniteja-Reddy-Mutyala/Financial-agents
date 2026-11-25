@@ -23,7 +23,7 @@ python3 src/build_embeddings.py              # one-time: embed data/kb.json -> d
 python3 demo.py                              # CLI: run sample queries end-to-end (calls Bedrock live)
 python3 demo.py "your question here"         # CLI: ask one question
 LLM_PROVIDER=groq python3 demo.py "..."      # same, but the final answer comes from Groq instead of Bedrock
-streamlit run app_ui.py                      # web UI: chat interface, has a free offline-mode toggle
+streamlit run app_ui.py                      # web UI: chat interface; toggle picks Bedrock or Groq for the final answer (neither is free — retrieval is always a real Bedrock call either way)
 
 python3 -m pytest                            # full test suite — no AWS calls, no cost
 RUN_LIVE_BEDROCK_TESTS=1 python3 -m pytest tests/test_live_bedrock.py tests/test_live_rag.py -v   # real, billed Bedrock calls
@@ -77,7 +77,7 @@ editing rather than guessing from this summary:
 - **`write-compliance-tests`** — before adding or updating any test,
   including the tests for a new feature (see Conventions below).
 - **`edit-compliance-ui`** — before touching `app_ui.py`, the Streamlit
-  web UI (layout, the live/offline Bedrock toggle, chat history).
+  web UI (layout, the Bedrock/Groq answer-generation toggle, chat history).
 - **`run-evaluation-suite`** — before running, changing, or interpreting
   anything in `eval/` (the templated 1,416-case eval, the Groq LLM-judge
   pass, and the `.env` secrets convention they introduced).
