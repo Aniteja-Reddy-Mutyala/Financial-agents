@@ -63,7 +63,7 @@ with st.sidebar:
     st.header("Settings")
     use_bedrock = st.toggle(
         "Use live Bedrock for the final answer",
-        value=True,
+        value=False,
         help=(
             "Retrieval always makes one real, billed Bedrock embedding call "
             "per question, on or off (that's how dense-embedding search "

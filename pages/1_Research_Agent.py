@@ -43,7 +43,7 @@ with st.sidebar:
     st.header("Settings")
     use_bedrock = st.toggle(
         "Use live Bedrock for the final answer",
-        value=True,
+        value=False,
         help=(
             "On = Amazon Nova Micro generates the topic extraction and "
             "synthesis (2 real, billed AWS calls). Off = Groq's "
