@@ -68,6 +68,17 @@ _CHITCHAT_PHRASES = {
     "bye", "goodbye", "see you",
 }
 
+# Substring markers for phrasing the exact-match list above won't catch
+# ("tell me something about yourself", "so who exactly are you") — each
+# one is a distinctive multi-word fragment, not a single common word, so
+# it's very unlikely to appear inside real compliance text by accident
+# (unlike e.g. bare "help" or "you", which would false-positive on real
+# questions and so are deliberately NOT markers here).
+_CHITCHAT_SUBSTRINGS = (
+    "about yourself", "about you", "who are you", "what are you",
+    "what can you do", "what do you do", "how can you help",
+)
+
 
 def is_chitchat(query: str) -> bool:
     """True if `query` is a greeting/small-talk aside rather than a real
@@ -75,7 +86,9 @@ def is_chitchat(query: str) -> bool:
     separate, deterministic check instead of a label on IntentClassifier.
     """
     normalized = query.strip().lower().rstrip("!.?")
-    return normalized in _CHITCHAT_PHRASES
+    if normalized in _CHITCHAT_PHRASES:
+        return True
+    return any(marker in normalized for marker in _CHITCHAT_SUBSTRINGS)
 
 
 LABEL_DESCRIPTIONS = {

@@ -159,7 +159,11 @@ def test_clear_cut_queries_have_signal(clf, query, _expected):
 @pytest.mark.parametrize(
     "query",
     ["Hi", "hi", "Hi!", "hello", "Hello there.", "hey", "tell me about yourself",
-     "Tell me about yourself?", "who are you", "what can you do", "thanks", "thank you", "goodbye"],
+     "Tell me about yourself?", "who are you", "what can you do", "thanks", "thank you", "goodbye",
+     # Phrasing variants not in the exact-match list, caught by the
+     # substring markers instead (real-world bug: "Tell me something
+     # about yourself" fell through to the classifier and escalated).
+     "Tell me something about yourself", "tell me a bit about yourself"],
 )
 def test_is_chitchat_matches_greetings_and_small_talk(query):
     assert is_chitchat(query) is True
