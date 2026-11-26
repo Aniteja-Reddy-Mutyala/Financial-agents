@@ -1,6 +1,6 @@
 ---
 name: session-handoff
-description: Compact the current conversation into a handoff brief, buffer it, then run /clear and have a SessionStart hook feed the brief back in as the fresh session's starting context — so the user keeps working in the *same* session (same id, same window) instead of being moved to a new one. Use this proactively whenever the user says something like "wrap up", "hand off", "let's end here", "I'm done for now", or otherwise signals the session is ending — not just on an explicit /session-handoff invocation.
+description: Compact the current conversation into a handoff brief and start a fresh session pre-loaded with it. Use this proactively whenever the user says something like "wrap up", "hand off", "let's end here", "I'm done for now", or otherwise signals the session is ending — not just on an explicit /session-handoff invocation.
 argument-hint: "What will the next session be used for?"
 ---
 
@@ -23,51 +23,31 @@ argument-hint: "What will the next session be used for?"
      what the next session should focus on and tailor the brief to that,
      rather than trying to cover everything.
 
-2. **Write the brief to the handoff buffer**, keyed to the current
-   working directory so it survives the clear below:
+2. **Start a new session pre-loaded with the brief** —
+   `mcp__ccd_session__start_session` with `initiation: "user_asked"`
+   (the user explicitly asked for a handoff), `context: "fresh"`, a
+   short `title` describing the task, `prompt` set to the compiled
+   brief, and `background` (required with `context: "fresh"`, at least
+   80 characters) summarizing the overall goal and how this handoff
+   fits — the call is refused without it. Omit `use_worktree` so it
+   inherits this project's default unless the user's request implies
+   otherwise.
 
-   ```bash
-   KEY=$(python3 -c "import hashlib,os; print(hashlib.md5(os.getcwd().encode()).hexdigest())")
-   mkdir -p ~/.claude/session-handoff-buffers
-   cat > ~/.claude/session-handoff-buffers/"$KEY".md <<'EOF'
-   <the compiled brief>
-   EOF
-   ```
+   This hands the brief to the new session directly as its task —
+   no disk buffer, no hook, no `/clear` round-trip. The new session is
+   a separate row the user can open; it is not the same session id as
+   this one.
 
-   This pairs with the `SessionStart` hook at
-   `~/.claude/hooks/session-handoff-inject.py` (wired in
-   `~/.claude/settings.json` on the `"clear"` source) — it watches for a
-   buffer file keyed by the *new* session's cwd and, if found, feeds its
-   contents back in as `additionalContext` and deletes it. If that hook
-   isn't present on this machine (check
-   `~/.claude/hooks/session-handoff-inject.py` exists and
-   `~/.claude/settings.json` wires it under `hooks.SessionStart` with
-   `"matcher": "clear"`), set it up first — see the hook's own docstring
-   — or fall back to the temp-directory approach in the "Optional" section
-   below, since without the hook nothing will re-inject the buffer.
-
-3. Tell the user, in this same turn, what's about to happen (this is the
-   user's last chance to read anything from this session before the
-   transcript clears — say it *before* step 4, not after):
-   - A short confirmation that the brief is buffered.
-   - That you're about to run `/clear` and the next turn in this same
-     session will open with that brief already loaded.
-
-4. **Clear the session** — call `mcp__ccd_session_mgmt__clear_session`
-   with `session_id: "self"` (load it via `ToolSearch` first if it's not
-   already loaded). Per that tool's own description, the clear happens
-   once this turn ends, so nothing you say after this call is seen by
-   anyone — step 3's message is the actual handoff notice to the user,
-   not this call.
+3. Tell the user, in this same turn, that the new session has started
+   and link it (`[title](#local_<id>)` using the id `start_session`
+   returned) so they can open it.
 
 ## Optional: also save a durable copy
 
 The compiled brief can also be written to the OS temp directory
 (`$TMPDIR`, else `/tmp`; `%TEMP%` on Windows) as a backup reference, the
 same way the original skill this is based on always did — useful if the
-user wants a copy outside the buffer mechanism, or as the fallback when
-the SessionStart hook isn't set up on this machine (see step 2). This is
-secondary, not the primary mechanism.
+user wants a copy outside the new session itself.
 
 ## Attribution
 
@@ -75,16 +55,24 @@ Based on
 https://github.com/mattpocock/skills/blob/main/skills/productivity/handoff/SKILL.md
 (MIT licensed) — specifically its instructions for *compiling* a handoff
 brief (what to include, what to skip, redaction, argument handling) are
-preserved. The delivery mechanism is a deviation from both the original
-and an earlier version of this skill: Pocock's version always wrote a
-passive file to disk for a human or a different agent to manually feed
-into a new session; an earlier version of this skill started a brand
-new session (`mcp__ccd_session__start_session`) pre-loaded with the
-brief. This version instead keeps the user in the *same* session by
-buffering the brief to disk, running this environment's own
+preserved. The delivery mechanism differs from the original, which
+always wrote a passive file to disk for a human or a different agent to
+manually feed into a new session; this version instead hands the brief
+directly to a freshly started session via `mcp__ccd_session__start_session`.
+
+An earlier version of this skill tried to keep the user in the *same*
+session by buffering the brief to disk, running this environment's
 `/clear`-equivalent tool (`mcp__ccd_session_mgmt__clear_session`), and
 relying on a user-level `SessionStart` hook
 (`~/.claude/hooks/session-handoff-inject.py`) to re-inject the buffer as
-the cleared session's starting context. That hook is environment setup,
-not something this skill invocation can create on the fly if missing —
-see step 2's fallback.
+the cleared session's starting context. That didn't work: in this
+environment (the Claude Code desktop app's "Code tab"), `clear_session`
+is an app-native RPC that does not go through the CLI's hooks.json
+`SessionStart` pipeline, so the hook never fired — confirmed by a
+buffer file left unconsumed on disk and zero `SessionStart`/hook-related
+lines in the app's own log, next to it logging its own internal hook
+events constantly. That hook script and its wiring in
+`~/.claude/settings.json` (`hooks.SessionStart` matcher `"clear"`) have
+been removed as dead weight; this version uses the
+`start_session`-based approach instead, which is natively supported
+here.

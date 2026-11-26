@@ -5,17 +5,19 @@ Guidance for Claude Code (or any agent) working in this repository.
 ## Session management (Claude Code)
 
 `session-handoff` (`.claude/skills/session-handoff/SKILL.md`) compacts the
-current conversation into a handoff document for a fresh session to
-continue from — verbatim copy of Matt Pocock's `handoff` skill
-(https://github.com/mattpocock/skills, MIT licensed), with only the
-frontmatter `name` changed to match this file's invocation name. It's
-`disable-model-invocation: true`, so it only runs on an explicit
-invocation (e.g. `/session-handoff`), never auto-triggered by phrasing
-like "wrap up" — call it yourself when you want a handoff doc, don't
-expect it to fire on its own.
+current conversation into a handoff brief and starts a fresh session
+pre-loaded with it (`mcp__ccd_session__start_session`) — based on Matt
+Pocock's `handoff` skill (https://github.com/mattpocock/skills, MIT
+licensed) for the brief-compiling instructions, with a different
+delivery mechanism (see the skill's own Attribution section for why: an
+earlier same-session clear+hook-reinject approach didn't work in this
+environment and was dropped). It's meant to fire proactively on phrasing
+like "wrap up" or "let's end here", not just on an explicit
+`/session-handoff` invocation.
 
-It writes to the OS temp directory, not this repo — nothing here commits
-or tracks the handoff doc itself.
+Nothing here commits or tracks the handoff brief itself — it only lives
+in the new session's starting prompt (plus an optional OS-temp-directory
+copy, per the skill's "Optional" section).
 
 ## What this project is
 
