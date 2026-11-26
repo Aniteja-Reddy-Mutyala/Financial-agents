@@ -53,13 +53,23 @@ ecosystems (Orchestrator, Verifier, Planner, Email, Calendar, Compliance
 agents) with memory persistence and role-based specialization."*
 Mapping that onto what exists/is planned here:
 
-- **Orchestrator / Verifier / Planner** — not separate top-level agents;
-  these are internal node roles *inside* each domain agent (see
-  `classify_intent_node`/`verifier_node`/`planner_node` in `agents.py`,
-  and the equivalent intake/extract/research nodes in
-  `research_agent.py`). Each new agent gets its own version of this
-  internal role-based specialization, not a shared Orchestrator/Verifier/
-  Planner instance across agents.
+- **Orchestrator / Verifier / Planner** — these names now map onto two
+  *different* levels, both intentional (see the Cross-agent integration
+  bullet below for the top-level pair's full flow):
+  - **Per-agent internal roles** — node roles *inside* each domain agent
+    (see `classify_intent_node`/`verifier_node`/`planner_node` in
+    `agents.py`, and the equivalent intake/extract/research nodes in
+    `research_agent.py`). Each new agent gets its own version of this
+    internal role-based specialization, not a shared instance across
+    agents. Unchanged by the point below.
+  - **Top-level Orchestrator and Planner** — a *separate*, cross-agent
+    pair that sits in front of all the domain agents (Compliance,
+    Research, Calendar, …): the Orchestrator receives the user's query
+    and the final composed answer; the Planner sits between the
+    Orchestrator and the domain agents, turning one query into a plan
+    and subtasks assigned to whichever agent(s) can handle them. See
+    Cross-agent integration below for the full request/response flow.
+    Planned, not built — same as every other item in this list.
 - **Compliance agent** — done (`src/agents.py`).
 - **Research agent** — done (`src/research_agent.py`).
 - **Email agent, Calendar agent** — planned, not built yet. Don't start
@@ -82,35 +92,53 @@ Mapping that onto what exists/is planned here:
 - **Cross-agent integration** — planned, not built. Today Compliance,
   Research, and (once built) Calendar are fully independent graphs with
   no shared routing between them — a user's query only ever reaches one
-  agent, whichever page/CLI entry point they used. The end goal is for
-  these agents to work *together* on one incoming query: a **top-level
-  router/dispatcher** that takes one user query, decides which agent(s)
-  it belongs to, calls each relevant agent's existing `.handle(...)`
-  unchanged, and composes a single answer when a query spans more than
-  one agent (e.g. "does this transaction need a SAR filing, and put 30
-  minutes on my calendar with the compliance officer next week" touches
-  both Compliance and Calendar). This matches the project's Northern
-  Trust framing: the user population here is assumed to mostly ask
-  finance/compliance-shaped queries, not generic unrelated requests, so
-  routing between agents is expected to come up in real usage, not be a
-  hypothetical.
+  agent, whichever page/CLI entry point they used. The end goal is a
+  **top-level Orchestrator → Planner → domain agents → Orchestrator**
+  flow, one call per incoming user query:
 
-  **Naming note**: this router/dispatcher is a *different* thing from
-  each agent's own internal Orchestrator node role (the bullet above,
-  e.g. `classify_intent_node`) even though the resume sentence uses
-  "Orchestrator" for both. The per-agent internal role stays exactly as
-  it is now, scoped to one agent; the router is a new, separate
-  top-level component this file is only recording the intent for.
+  1. The user's query goes to the **top-level Orchestrator** first. It
+     receives the raw query and, at the end of the flow, the composed
+     final answer that goes back to the user — it owns both ends of the
+     request.
+  2. The Orchestrator passes the query to the **top-level Planner**.
+     The Planner generates a plan for how the query should be answered
+     and breaks it into subtasks, each assigned to whichever domain
+     agent(s) can handle it (Research, Calendar, Compliance, …) — e.g.
+     "does this transaction need a SAR filing, and put 30 minutes on my
+     calendar with the compliance officer next week" splits into a
+     Compliance subtask and a Calendar subtask.
+  3. Each assigned domain agent runs on its subtask via its existing
+     `.handle(...)` entry point, **unchanged** — the Planner/Orchestrator
+     call into agents the same way `demo.py`/`research_demo.py` do today,
+     no per-agent special-casing.
+  4. Each agent's response is forwarded back to the top-level
+     Orchestrator, which composes them into a single final answer and
+     sends that to the user.
 
-  Not scoped or started — no dispatcher code, routing logic, or new
-  top-level module exists yet, and this bullet is not a green light to
-  build one unprompted, same rule as every other planned-but-unbuilt
-  item in this section. The concrete requirement this *does* place on
-  every agent built from now on: keep exposing a plain
-  `.handle(...) -> SimpleNamespace(answer=..., trace=...)` entry point
-  (already true of `ComplianceAgentGraph`/`ResearchAgentGraph`) so a
-  future router can call any agent the same way without per-agent
-  special-casing.
+  This matches the project's Northern Trust framing: the user population
+  here is assumed to mostly ask finance/compliance-shaped queries, not
+  generic unrelated requests, so routing between agents is expected to
+  come up in real usage, not be a hypothetical.
+
+  **Naming note**: the top-level Orchestrator and Planner are a
+  *different* thing from each domain agent's own internal Orchestrator/
+  Planner node roles (the bullet above, e.g. `classify_intent_node`/
+  `planner_node`), even though the resume sentence uses the same names
+  for both. The per-agent internal roles stay exactly as they are now,
+  scoped to one agent; the top-level Orchestrator and Planner are new,
+  separate components this file is only recording the intent for — the
+  Verifier role, by contrast, stays purely per-agent (no top-level
+  Verifier in this flow).
+
+  Not scoped or started — no Orchestrator/Planner code, routing logic,
+  or new top-level module exists yet, and this bullet is not a green
+  light to build one unprompted, same rule as every other
+  planned-but-unbuilt item in this section. The concrete requirement
+  this *does* place on every agent built from now on: keep exposing a
+  plain `.handle(...) -> SimpleNamespace(answer=..., trace=...)` entry
+  point (already true of `ComplianceAgentGraph`/`ResearchAgentGraph`) so
+  the future top-level Planner can call any agent the same way without
+  per-agent special-casing.
 
 **Why this section exists**: so that adding the next agent or
 persistence doesn't require re-deriving this scope from scratch or
