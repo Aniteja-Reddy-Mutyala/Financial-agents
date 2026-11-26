@@ -1,6 +1,6 @@
 ---
 name: run-ui
-description: Use when asked to start, launch, run, open, or preview this project's Streamlit web UI — either the Compliance Agent (main page) or the Research Agent page. One dev server serves both; launch it via the Claude Code browser preview tool's pre-configured compliance-ui entry, no manual setup or asking the user first.
+description: Use when asked to start, launch, run, open, or preview this project's Streamlit web UI — the Compliance Agent (main page), the Research Agent page, or the Orchestrator Agent page. One dev server serves all three; launch it via the Claude Code browser preview tool's pre-configured compliance-ui entry, no manual setup or asking the user first.
 ---
 
 ## How to start it
@@ -14,6 +14,12 @@ ask the user whether to start it; just do it when this skill is invoked.
 - `/Research_Agent` = the Research Agent page (`pages/1_Research_Agent.py`),
   auto-discovered by Streamlit's multipage nav — it's the same server,
   not a second launch.
+- `/Orchestrator_Agent` = the top-level Orchestrator page
+  (`pages/2_Orchestrator_Agent.py`), same auto-discovery, same server.
+  It builds its own Compliance and Research agent instances, so opening
+  it incurs at least the same real Bedrock retrieval cost as the main
+  page, plus its own plan/compose LLM calls — see
+  `edit-orchestrator-agent`.
 
 If a server is already running on this port, the tool reuses it rather
 than starting a duplicate — check `preview_list` first if unsure whether
@@ -46,3 +52,17 @@ one's already up.
 - `data/embeddings.npz` must already exist for the Compliance Agent to
   answer anything (it does in this repo) — see `bedrock-rag-retrieval`
   if it's ever missing.
+- **Editing a file under `src/` while the server is already running
+  does NOT take effect**, even though Streamlit reruns the page script
+  on every interaction/file-save: the page scripts (`app_ui.py`,
+  `pages/*.py`) only `import` modules like `orchestrator_agent` once
+  per process, and Python caches that import in `sys.modules` — a
+  Streamlit "rerun" re-executes the page script, not a fresh import of
+  everything it imports. Confirmed directly while testing a fix to
+  `orchestrator_agent.py`: the UI kept showing the old (buggy)
+  behavior until the server process itself was stopped
+  (`preview_stop`) and restarted (`preview_start`), not just
+  re-navigated or rerun. Always restart the server after editing
+  anything under `src/`, not just after editing a `pages/*.py` file or
+  `app_ui.py` itself (those two *do* get fully re-executed per rerun,
+  since Streamlit treats the page script specially).

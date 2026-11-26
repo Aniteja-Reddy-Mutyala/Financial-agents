@@ -41,8 +41,16 @@ report with sources. It shares the `BedrockSummarizer`/`GroqSummarizer`
 classes (via their generic `.chat()` method) and the `LLM_PROVIDER`
 pattern with the compliance agent, but has its own state, nodes, prompts,
 and tests — it is **not** a node bolted onto `ComplianceAgentGraph`. This
-is meant to be the first of several independent agents sharing this
-codebase; see `edit-research-agent` before adding a third.
+is meant to be the first of several independent *domain* agents sharing
+this codebase; see `edit-research-agent` before adding the next one
+(Email/Calendar, per "Target end product" below).
+
+`src/orchestrator_agent.py` (`OrchestratorGraph`) is a third module, but
+a *different kind* of agent from the two above — it's the cross-agent
+Orchestrator/Planner layer that sits in front of Compliance/Research
+(and any future domain agent), not another domain agent itself. See
+"Target end product"'s "Cross-agent integration" bullet and
+`edit-orchestrator-agent` before touching it.
 
 ## Target end product
 
@@ -89,12 +97,16 @@ Mapping that onto what exists/is planned here:
   cross-run persistence) so an agent's own graph state — not just a UI's
   chat log — survives across turns of a conversation. Planned, not done;
   don't add this silently as a side effect of an unrelated change.
-- **Cross-agent integration** — planned, not built. Today Compliance,
-  Research, and (once built) Calendar are fully independent graphs with
-  no shared routing between them — a user's query only ever reaches one
-  agent, whichever page/CLI entry point they used. The end goal is a
-  **top-level Orchestrator → Planner → domain agents → Orchestrator**
-  flow, one call per incoming user query:
+- **Cross-agent integration** — the top-level Orchestrator/Planner
+  piece itself is **done** (see the "Done" paragraph below); Calendar/
+  Email are the still-planned domain agents it would route to once
+  built. Before this existed, Compliance and Research were fully
+  independent graphs with no shared routing between them — a user's
+  query only ever reached one agent, whichever page/CLI entry point
+  they used. The end goal (now built for Compliance/Research, same
+  shape for any future agent) is a **top-level Orchestrator → Planner →
+  domain agents → Orchestrator** flow, one call per incoming user
+  query:
 
   1. The user's query goes to the **top-level Orchestrator** first. It
      receives the raw query and, at the end of the flow, the composed
@@ -130,15 +142,31 @@ Mapping that onto what exists/is planned here:
   Verifier role, by contrast, stays purely per-agent (no top-level
   Verifier in this flow).
 
-  Not scoped or started — no Orchestrator/Planner code, routing logic,
-  or new top-level module exists yet, and this bullet is not a green
-  light to build one unprompted, same rule as every other
-  planned-but-unbuilt item in this section. The concrete requirement
-  this *does* place on every agent built from now on: keep exposing a
-  plain `.handle(...) -> SimpleNamespace(answer=..., trace=...)` entry
-  point (already true of `ComplianceAgentGraph`/`ResearchAgentGraph`) so
-  the future top-level Planner can call any agent the same way without
-  per-agent special-casing.
+  **Done** (`src/orchestrator_agent.py`'s `OrchestratorGraph`) — a
+  3-node `plan -> dispatch -> compose -> END` graph: `planner_node`
+  asks an LLM to split the query into `agent_name: subtask` lines, one
+  line **only for each agent it judges the query actually needs** (not
+  a forced fan-out to every agent — confirmed with a real Groq call: a
+  purely compliance-shaped query produced a one-line plan and never
+  touched the Research agent at all; only `compliance`/`research` are
+  recognized today — Calendar/Email would be added the same way once
+  built, see `edit-orchestrator-agent`), falling back to routing the
+  whole query to `compliance` if planning fails or parses to nothing;
+  `dispatch_node` calls each named agent's existing `.handle(...)`,
+  unchanged; `compose_node` forwards a single agent's answer verbatim
+  (no extra LLM call) or asks an LLM to weave multiple agents' answers
+  into one, falling back to concatenation if that call fails. The
+  default `compliance`/`research` instances it builds are constructed
+  with **this orchestrator's own `llm`**, not left to resolve their own
+  provider from `LLM_PROVIDER` — a real bug caught by manually testing
+  the Streamlit page (the UI's provider toggle was silently not
+  reaching the domain agents), fixed and regression-tested, see
+  `edit-orchestrator-agent`. See that skill before changing any of
+  this. The concrete requirement this places on every agent built from
+  now on: keep exposing a plain `.handle(...) ->
+  SimpleNamespace(answer=..., trace=...)` entry point (already true of
+  `ComplianceAgentGraph`/`ResearchAgentGraph`) so the top-level Planner
+  can call any agent the same way without per-agent special-casing.
 
 **Why this section exists**: so that adding the next agent or
 persistence doesn't require re-deriving this scope from scratch or
@@ -175,11 +203,14 @@ python3 src/build_embeddings.py              # one-time: embed data/kb.json -> d
 python3 demo.py                              # CLI: run sample queries end-to-end (calls Bedrock live)
 python3 demo.py "your question here"         # CLI: ask one question
 LLM_PROVIDER=groq python3 demo.py "..."      # same, but the final answer comes from Groq instead of Bedrock
-streamlit run app_ui.py                      # web UI: chat interface; toggle picks Bedrock or Groq for the final answer (neither is free — retrieval is always a real Bedrock call either way); the Research agent appears as a second page in the same app (pages/1_Research_Agent.py, auto-discovered by Streamlit — app_ui.py itself is untouched)
+streamlit run app_ui.py                      # web UI: chat interface; toggle picks Bedrock or Groq for the final answer (neither is free — retrieval is always a real Bedrock call either way); the Research agent and the top-level Orchestrator agent each appear as a further page in the same app (pages/1_Research_Agent.py, pages/2_Orchestrator_Agent.py, both auto-discovered by Streamlit — app_ui.py itself is untouched)
 
 python3 research_demo.py "a topic"           # CLI: Research agent, query only
 python3 research_demo.py --doc resume.pdf "focus on cloud skills"   # CLI: Research agent, document + query
 LLM_PROVIDER=groq python3 research_demo.py "..."   # same provider toggle as the compliance agent
+
+python3 orchestrator_demo.py "a query"       # CLI: top-level Orchestrator — plans across Compliance/Research, composes one answer (builds both real agents, so this is at least as expensive as running demo.py + research_demo.py)
+LLM_PROVIDER=groq python3 orchestrator_demo.py "..."   # same provider toggle, used for planning/composing and passed to both domain agents
 
 python3 -m pytest                            # full test suite — no AWS calls, no cost
 RUN_LIVE_BEDROCK_TESTS=1 python3 -m pytest tests/test_live_bedrock.py tests/test_live_rag.py -v   # real, billed Bedrock calls
@@ -273,8 +304,13 @@ editing rather than guessing from this summary:
   `src/web_search.py`, `src/document_parser.py`, or
   `src/research_prompts.py` (the Research agent's graph, nodes, and
   prompts — independent from `edit-compliance-graph`).
+- **`edit-orchestrator-agent`** — before touching
+  `src/orchestrator_agent.py` or `src/orchestrator_prompts.py` (the
+  top-level Orchestrator -> Planner -> domain agents -> Orchestrator
+  flow — distinct from each domain agent's own internal Orchestrator/
+  Planner node roles; see "Target end product" above).
 - **`run-ui`** — whenever asked to start/launch/open/preview the
-  Streamlit UI (either page) — just launch it via `preview_start`, don't
+  Streamlit UI (any page) — just launch it via `preview_start`, don't
   ask first.
 - Before touching `src/agent_common.py` (the `default_llm()`/
   `log_step()` helpers shared by every agent): both `agents.py` and
