@@ -2,6 +2,21 @@
 
 Guidance for Claude Code (or any agent) working in this repository.
 
+## Session management (Claude Code)
+
+`session-handoff` (`.claude/skills/session-handoff/SKILL.md`) compacts the
+current conversation into a handoff document for a fresh session to
+continue from — verbatim copy of Matt Pocock's `handoff` skill
+(https://github.com/mattpocock/skills, MIT licensed), with only the
+frontmatter `name` changed to match this file's invocation name. It's
+`disable-model-invocation: true`, so it only runs on an explicit
+invocation (e.g. `/session-handoff`), never auto-triggered by phrasing
+like "wrap up" — call it yourself when you want a handoff doc, don't
+expect it to fire on its own.
+
+It writes to the OS temp directory, not this repo — nothing here commits
+or tracks the handoff doc itself.
+
 ## What this project is
 
 A small, locally-runnable recreation of a multi-domain compliance agent
