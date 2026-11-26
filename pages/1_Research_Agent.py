@@ -8,6 +8,7 @@ Presentation layer only — all business logic stays in
 src/research_agent.py. See the edit-research-agent skill before
 changing this file.
 """
+import os
 import sys
 from pathlib import Path
 
@@ -17,6 +18,18 @@ import streamlit as st  # noqa: E402
 
 from groq_llm import GroqSummarizer  # noqa: E402
 from research_agent import ResearchAgentGraph  # noqa: E402
+
+# Streamlit re-runs each page script independently (app_ui.py's own top-level
+# code doesn't execute for this page), so the st.secrets -> os.environ bridge
+# needs to be here too — see app_ui.py and CLAUDE.md's "Future deployment".
+# Locally, with no secrets.toml, st.secrets raises StreamlitSecretNotFoundError
+# on access (not just an empty mapping), so this is wrapped to stay a no-op.
+try:
+    for _key in ("GROQ_API_KEY", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_REGION"):
+        if _key in st.secrets:
+            os.environ.setdefault(_key, st.secrets[_key])
+except st.errors.StreamlitSecretNotFoundError:
+    pass
 
 st.set_page_config(page_title="Research Agent", page_icon="🔎", layout="centered")
 

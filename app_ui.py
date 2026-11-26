@@ -8,6 +8,7 @@ Run with:
 
 See the `edit-compliance-ui` skill before changing this file.
 """
+import os
 import sys
 from pathlib import Path
 
@@ -18,6 +19,18 @@ import streamlit as st  # noqa: E402
 from agents import ComplianceAgentGraph  # noqa: E402
 from classifier import LABEL_DESCRIPTIONS  # noqa: E402
 from groq_llm import GroqSummarizer  # noqa: E402
+
+# Streamlit Community Cloud injects secrets via st.secrets, not os.environ
+# (and has no ~/.aws/credentials) — bridge them so every module here that
+# reads via os.environ keeps working unchanged. Locally, with no
+# secrets.toml, st.secrets raises StreamlitSecretNotFoundError on access
+# (not just an empty mapping), so this is wrapped to stay a no-op there.
+try:
+    for _key in ("GROQ_API_KEY", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_REGION"):
+        if _key in st.secrets:
+            os.environ.setdefault(_key, st.secrets[_key])
+except st.errors.StreamlitSecretNotFoundError:
+    pass
 
 st.set_page_config(page_title="Compliance Agent", page_icon="⚖️", layout="centered")
 
